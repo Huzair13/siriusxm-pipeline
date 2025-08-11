@@ -13,14 +13,20 @@ phases:
       - "terraform version"
       - pip install -r requirements.txt
 
-
-
   pre_build:
     commands:
       - echo "Detecting changed jobs for PLAN"
       - |
-        CHANGED_JOBS=$(git diff --name-only ${CODEBUILD_RESOLVED_SOURCE_VERSION}^ ${CODEBUILD_RESOLVED_SOURCE_VERSION} \
-          | grep "^jobs/" | cut -d "/" -f2 | sort | uniq)
+        # Check if a previous commit exists (handles the first commit case)
+        if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+          # If a parent commit exists, use git diff to find changed jobs
+          CHANGED_JOBS=$(git diff --name-only ${CODEBUILD_RESOLVED_SOURCE_VERSION}^ ${CODEBUILD_RESOLVED_SOURCE_VERSION} \
+            | grep "^jobs/" | cut -d "/" -f2 | sort | uniq)
+        else
+          # If this is the first commit, assume all jobs are new
+          echo "This appears to be the first commit. Processing all jobs."
+          CHANGED_JOBS=$(ls jobs)
+        fi
         echo "Changed jobs: $CHANGED_JOBS"
 
   build:
