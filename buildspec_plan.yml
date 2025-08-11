@@ -7,13 +7,15 @@ phases:
       - curl -o terraform.zip https://releases.hashicorp.com/terraform/1.5.6/terraform_1.5.6_linux_amd64.zip
       - unzip terraform.zip && mv terraform /usr/local/bin && terraform version
       - pip install -r requirements.txt
+
   pre_build:
     commands:
       - echo "Detecting changed jobs for PLAN"
       - |
-        CHANGED_JOBS=$(git diff --name-only $CODEBUILD_RESOLVED_SOURCE_VERSION^ $CODEBUILD_RESOLVED_SOURCE_VERSION |
-          grep "^jobs/" | cut -d "/" -f2 | sort | uniq)
-      - echo "Changed jobs: $CHANGED_JOBS"
+        CHANGED_JOBS=$(git diff --name-only ${CODEBUILD_RESOLVED_SOURCE_VERSION}^ ${CODEBUILD_RESOLVED_SOURCE_VERSION} \
+          | grep "^jobs/" | cut -d "/" -f2 | sort | uniq)
+        echo "Changed jobs: $CHANGED_JOBS"
+
   build:
     commands:
       - echo "Running terraform PLAN in each changed job"
@@ -26,6 +28,7 @@ phases:
             cd ../../
           fi
         done
+
 artifacts:
   files:
     - jobs/**/tfplan
