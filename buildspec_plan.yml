@@ -34,12 +34,17 @@ phases:
       - echo "Running terraform PLAN in each changed job"
       - |
         for job in $CHANGED_JOBS; do
-          if [ -d "jobs/$job" ]; then
-            cd jobs/$job
-            terraform init -backend-config=codepipeline.tfbackend
-            terraform plan -var-file=codepipeline.tfvars -out=tfplan
-            terraform show tfplan
-            cd ../../
+          echo "Processing job: $job"
+          # Use the -chdir flag to run Terraform from the job's directory
+          # This keeps the shell at the root, making module paths consistent
+          terraform -chdir=jobs/$job init -backend-config=codepipeline.tfbackend
+          terraform -chdir=jobs/$job plan -var-file=codepipeline.tfvars -out=tfplan
+          
+          # Check if the tfplan file was successfully created before trying to show it
+          if [ -f "jobs/$job/tfplan" ]; then
+            terraform show jobs/$job/tfplan
+          else
+            echo "Failed to create tfplan file for job: $job"
           fi
         done
 
