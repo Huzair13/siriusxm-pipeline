@@ -52,6 +52,7 @@ phases:
   build:
     commands:
       - echo "Running terraform PLAN in each changed job"
+      - pwd
       - |
         for job in $CHANGED_JOBS; do
           if [ -d "jobs/$job" ]; then
