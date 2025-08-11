@@ -1,5 +1,11 @@
 version: 0.2
 
+env:
+  variables:
+    TF_PLUGIN_CACHE_DIR: /root/.terraform.d/plugin-cache
+  # Ensure CODEBUILD_SRC_DIR is the primary source
+  # and AWS_DEFAULT_REGION is set in the CodeBuild project env.
+
 phases:
   install:
     commands:
@@ -7,76 +13,95 @@ phases:
       - yum update -y
       - yum install -y unzip
       - rm -rf terraform
-      - "curl -O https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip"
-      - "unzip terraform_1.5.7_linux_amd64.zip"
-      - "mv terraform /usr/local/bin/"
-      - "terraform version"
+      - curl -sSLO https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
+      - unzip -o terraform_1.5.7_linux_amd64.zip
+      - mv terraform /usr/local/bin/
+      - terraform version
+      - mkdir -p "${TF_PLUGIN_CACHE_DIR}"
       - pip install -r requirements.txt
 
   pre_build:
     commands:
-      # Fix 1: Authenticate to Docker Hub to avoid pull rate limit errors.
-      # You must set DOCKER_HUB_USERNAME and DOCKER_HUB_PASSWORD as
-      # environment variables in your CodeBuild project.
       - echo "Logging in to Docker Hub"
-      - docker login --username $DOCKER_HUB_USERNAME --password $DOCKER_HUB_PASSWORD
-      
-      - echo "Detecting changed jobs for PLAN"
+      - docker login --username "$DOCKER_HUB_USERNAME" --password "$DOCKER_HUB_PASSWORD"
+
+      - echo "Preparing git history to detect changed jobs"
+      - git fetch --no-tags --prune --depth=2 origin || true
       - |
-        # Check if a previous commit exists (handles the first commit case)
         if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
-          # If a parent commit exists, use git diff to find changed jobs
-          CHANGED_JOBS=$(git diff --name-only ${CODEBUILD_RESOLVED_SOURCE_VERSION}^ ${CODEBUILD_RESOLVED_SOURCE_VERSION} \
-            | grep "^jobs/" | cut -d "/" -f2 | sort | uniq)
+          # Compare last two commits; fallback to origin/main if needed
+          BASE_COMMIT=$(git rev-parse HEAD^)
+          CHANGED_JOBS=$(git diff --name-only "$BASE_COMMIT" HEAD | grep "^jobs/" | cut -d "/" -f2 | sort -u)
         else
-          # If this is the first commit, assume all jobs are new
-          echo "This appears to be the first commit. Processing all jobs."
-          CHANGED_JOBS=$(ls jobs)
+          echo "First build or shallow clone without parent. Processing all jobs."
+          CHANGED_JOBS=$(ls -1 jobs || true)
         fi
         echo "Changed jobs: $CHANGED_JOBS"
 
-      - echo "Building Python wheel artifacts with Docker..."
+      - echo "Building Python wheel artifacts with Docker for each changed job..."
       - |
-        # This assumes your Dockerfile is at the root of the repository.
-        # This requires the CodeBuild project to be in privileged mode.
         for job in $CHANGED_JOBS; do
-          if [ -d "jobs/$job" ]; then
-            cd jobs/$job
-            rm -rf ./dist ./utils-0.1-py3-none-any.whl
-            # Build the docker image
-            docker build -t glue-job-builder .
-            # Find the container ID for a dummy container
-            CID=$(docker create glue-job-builder)
-            # Copy the wheel file from the container
-            docker cp $CID:/out/utils-0.1-py3-none-any.whl ./utils-0.1-py3-none-any.whl
-            # Remove the temporary container
-            docker rm $CID
-            cd ../../
-          fi
+          [ -d "jobs/$job" ] || continue
+          echo "Building wheel for $job"
+          pushd "jobs/$job" >/dev/null
+          rm -rf ./dist ./utils-0.1-py3-none-any.whl
+          docker build -t glue-job-builder .
+          CID=$(docker create glue-job-builder)
+          docker cp "$CID":/out/utils-0.1-py3-none-any.whl ./utils-0.1-py3-none-any.whl
+          docker rm "$CID"
+          popd >/dev/null
         done
 
   build:
     commands:
-      - echo "Running terraform PLAN in each changed job"
+      - echo "Running Terraform fmt/validate/plan for changed jobs"
       - |
+        set -e
+        PLAN_EXIT=0
         for job in $CHANGED_JOBS; do
-          if [ -d "jobs/$job" ]; then
-            echo "Processing job: $job"
-            # Fix 2: Use the -chdir flag to run Terraform from the job's directory
-            # without changing the current working directory of the shell.
-            terraform -chdir=jobs/$job init -backend-config=terraform.tfbackend
-            terraform -chdir=jobs/$job plan -var-file=terraform.tfvars -out=tfplan
-            
-            # Check if the tfplan file was successfully created before trying to show it
-            if [ -f "jobs/$job/tfplan" ]; then
-              terraform show jobs/$job/tfplan
-            else
-              echo "Failed to create tfplan file for job: $job"
-            fi
+          [ -d "jobs/$job" ] || continue
+          echo "=== Processing job: $job ==="
+
+          # Lint
+          terraform -chdir="jobs/$job" fmt -check -diff -recursive
+
+          # Init (use backend config file present in each job)
+          terraform -chdir="jobs/$job" init -input=false -backend-config=terraform.tfbackend
+
+          # Validate
+          terraform -chdir="jobs/$job" validate -no-color
+
+          # Plan with detailed exit codes: 0=no changes, 2=changes, 1=error
+          if terraform -chdir="jobs/$job" plan -no-color -input=false -var-file=terraform.tfvars -out=tfplan -detailed-exitcode; then
+            EXIT=$?
+          else
+            EXIT=$?
+          fi
+
+          # Always render a human and JSON plan for artifacting
+          terraform -chdir="jobs/$job" show -no-color tfplan > "tfplan.txt" || true
+          terraform -chdir="jobs/$job" show -json tfplan > "tfplan.json" || true
+
+          # Track non-fatal (exit 2) vs fatal (exit 1)
+          if [ "$EXIT" -eq 1 ]; then
+            echo "Terraform plan failed for $job"
+            PLAN_EXIT=1
+          elif [ "$EXIT" -eq 2 ]; then
+            echo "Changes detected for $job"
+          else
+            echo "No changes for $job"
           fi
         done
+        exit $PLAN_EXIT
 
 artifacts:
   files:
     - jobs/**/tfplan
+    - jobs/**/tfplan.txt
+    - jobs/**/tfplan.json
+  discard-paths: no
+
+cache:
+  paths:
+    - /root/.terraform.d/plugin-cache/**
 
