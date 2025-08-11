@@ -100,8 +100,6 @@ artifacts:
     - jobs/**/tfplan
     - jobs/**/tfplan.txt
     - jobs/**/tfplan.json
-    - jobs/**/utils-0.1-py3-none-any.whl
-    - jobs/**/requirements.txt
   discard-paths: no
 
 cache:
