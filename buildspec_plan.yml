@@ -9,19 +9,23 @@ phases:
       - pip install -r requirements.txt
   pre_build:
     commands:
-      - echo "Detecting changed jobs for APPLY"
+      - echo "Detecting changed jobs for PLAN"
       - |
-        CHANGED_JOBS=$(ls jobs)  # You may refine this detection based on artifact presence
+        CHANGED_JOBS=$(git diff --name-only $CODEBUILD_RESOLVED_SOURCE_VERSION^ $CODEBUILD_RESOLVED_SOURCE_VERSION |
+          grep "^jobs/" | cut -d "/" -f2 | sort | uniq)
       - echo "Changed jobs: $CHANGED_JOBS"
   build:
     commands:
-      - echo "Running terraform APPLY in each changed job"
+      - echo "Running terraform PLAN in each changed job"
       - |
         for job in $CHANGED_JOBS; do
-          if [ -f "jobs/$job/tfplan" ]; then
+          if [ -d "jobs/$job" ]; then
             cd jobs/$job
             terraform init -backend-config=codepipeline.tfbackend
-            terraform apply -var-file=codepipeline.tfvars tfplan
+            terraform plan -var-file=codepipeline.tfvars -out=tfplan
             cd ../../
           fi
         done
+artifacts:
+  files:
+    - jobs/**/tfplan
