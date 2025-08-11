@@ -1,10 +1,5 @@
 version: 0.2
 
-env:
-  variables:
-    TF_IN_AUTOMATION: "1"
-    TF_PLUGIN_CACHE_DIR: "/root/.terraform.d/plugin-cache"
-
 phases:
   install:
     commands:
@@ -20,105 +15,68 @@ phases:
 
   pre_build:
     commands:
-      - echo "Docker Hub login (optional)"
+      # Fix 1: Authenticate to Docker Hub to avoid pull rate limit errors.
+      # You must set DOCKER_HUB_USERNAME and DOCKER_HUB_PASSWORD as
+      # environment variables in your CodeBuild project.
+      - echo "Logging in to Docker Hub"
+      - docker login --username $DOCKER_HUB_USERNAME --password $DOCKER_HUB_PASSWORD
+      
+      - echo "Detecting changed jobs for PLAN"
       - |
-        if [ -n "${DOCKER_HUB_USERNAME:-}" ] && [ -n "${DOCKER_HUB_PASSWORD:-}" ]; then
-          echo "$DOCKER_HUB_PASSWORD" | docker login --username "$DOCKER_HUB_USERNAME" --password-stdin
+        # Check if a previous commit exists (handles the first commit case)
+        if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+          # If a parent commit exists, use git diff to find changed jobs
+          CHANGED_JOBS=$(git diff --name-only ${CODEBUILD_RESOLVED_SOURCE_VERSION}^ ${CODEBUILD_RESOLVED_SOURCE_VERSION} \
+            | grep "^jobs/" | cut -d "/" -f2 | sort | uniq)
         else
-          echo "Skipping docker login (no creds)"
+          # If this is the first commit, assume all jobs are new
+          echo "This appears to be the first commit. Processing all jobs."
+          CHANGED_JOBS=$(ls jobs)
         fi
+        echo "Changed jobs: $CHANGED_JOBS"
 
-      - echo "Detecting changed jobs (Terraform) and jobs with src changes (Docker build)"
+      - echo "Building Python wheel artifacts with Docker..."
       - |
-        set -euo pipefail
-
-        # Compute diff base (handles first commit safely)
-        if git rev-parse --verify "${CODEBUILD_RESOLVED_SOURCE_VERSION}^" >/dev/null 2>&1; then
-          DIFF_RANGE="${CODEBUILD_RESOLVED_SOURCE_VERSION}^ ${CODEBUILD_RESOLVED_SOURCE_VERSION}"
-        else
-          DIFF_RANGE=""
-        fi
-
-        if [ -n "$DIFF_RANGE" ]; then
-          # Any change under jobs/<job>/ triggers Terraform
-          CHANGED_JOBS="$(
-            git diff --name-only $DIFF_RANGE \
-            | awk -F/ '/^jobs\// {print $2}' | sort -u
-          )"
-
-          # Only changes under jobs/<job>/src/ trigger Docker build
-          CHANGED_JOBS_SRC="$(
-            git diff --name-only $DIFF_RANGE \
-            | awk -F/ '/^jobs\/[^/]+\/src\// {print $2}' | sort -u
-          )"
-        else
-          echo "First commit detected."
-          # Terraform: plan all job folders
-          CHANGED_JOBS="$(ls -1 jobs 2>/dev/null || true)"
-          # Docker: only build for jobs that have a src/ tree
-          CHANGED_JOBS_SRC="$(find jobs -maxdepth 2 -type d -name src -printf '%h\n' 2>/dev/null | awk -F/ '{print $2}' | sort -u)"
-        fi
-
-        echo "CHANGED_JOBS=${CHANGED_JOBS:-}"       | tee .changed_jobs.env
-        echo "CHANGED_JOBS_SRC=${CHANGED_JOBS_SRC:-}" | tee .changed_jobs_src.env
-
-        echo "Changed jobs (Terraform): ${CHANGED_JOBS:-<none>}"
-        echo "Changed jobs with src changes (Docker): ${CHANGED_JOBS_SRC:-<none>}"
-
-      - echo "Building Python wheels ONLY for jobs with src changes..."
-      - |
-        set -euo pipefail
-        [ -f .changed_jobs_src.env ] && source .changed_jobs_src.env || true
-
-        # Nothing to build? Skip cleanly.
-        if [ -z "${CHANGED_JOBS_SRC:-}" ]; then
-          echo "No src changes detected. Skipping Docker wheel builds."
-        else
-          for job in ${CHANGED_JOBS_SRC}; do
-            [ -d "jobs/$job" ] || { echo "Skip $job (no dir)"; continue; }
-            echo "➡️  Building wheel for jobs/$job"
-            pushd "jobs/$job" >/dev/null
+        # This assumes your Dockerfile is at the root of the repository.
+        # This requires the CodeBuild project to be in privileged mode.
+        for job in $CHANGED_JOBS; do
+          if [ -d "jobs/$job" ]; then
+            cd jobs/$job
             rm -rf ./dist ./utils-0.1-py3-none-any.whl
+            # Build the docker image
             docker build -t glue-job-builder .
+            # Find the container ID for a dummy container
             CID=$(docker create glue-job-builder)
-            docker cp "$CID:/out/utils-0.1-py3-none-any.whl" ./utils-0.1-py3-none-any.whl
-            docker rm "$CID"
-            popd >/dev/null
-          done
-        fi
+            # Copy the wheel file from the container
+            docker cp $CID:/out/utils-0.1-py3-none-any.whl ./utils-0.1-py3-none-any.whl
+            # Remove the temporary container
+            docker rm $CID
+            cd ../../
+          fi
+        done
 
   build:
     commands:
-      - echo "Running terraform PLAN per changed job"
+      - echo "Running terraform PLAN in each changed job"
       - |
-        set -euo pipefail
-        [ -f .changed_jobs.env ] && source .changed_jobs.env || true
-
-        # No job changes? Exit gracefully.
-        if [ -z "${CHANGED_JOBS:-}" ]; then
-          echo "No job changes detected. Nothing to plan."
-          exit 0
-        fi
-
-        for job in ${CHANGED_JOBS}; do
-          [ -d "jobs/$job" ] || { echo "Skip $job (no dir)"; continue; }
-          echo "🛠  Processing job: $job"
-
-          terraform -chdir="jobs/$job" init \
-            -input=false -upgrade \
-            -backend-config=terraform.tfbackend
-
-          terraform -chdir="jobs/$job" validate -no-color
-
-          terraform -chdir="jobs/$job" plan \
-            -input=false -no-color \
-            -var-file=terraform.tfvars \
-            -out=tfplan
-
-          # IMPORTANT: show/apply from the SAME dir
-          terraform -chdir="jobs/$job" show -no-color tfplan
+        for job in $CHANGED_JOBS; do
+          if [ -d "jobs/$job" ]; then
+            echo "Processing job: $job"
+            # Fix 2: Use the -chdir flag to run Terraform from the job's directory
+            # without changing the current working directory of the shell.
+            terraform -chdir=jobs/$job init -backend-config=terraform.tfbackend
+            terraform -chdir=jobs/$job plan -var-file=terraform.tfvars -out=tfplan
+            
+            # Check if the tfplan file was successfully created before trying to show it
+            if [ -f "jobs/$job/tfplan" ]; then
+              terraform show jobs/$job/tfplan
+            else
+              echo "Failed to create tfplan file for job: $job"
+            fi
+          fi
         done
 
 artifacts:
   files:
     - jobs/**/tfplan
+
