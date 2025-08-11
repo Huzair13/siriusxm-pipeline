@@ -31,60 +31,10 @@ module "glue_assets_bucket" {
   ]
 }
 
-
-resource "null_resource" "ensure_setup_py" {
-  provisioner "local-exec" {
-    command = <<EOT
-cat > ${path.module}/setup.py <<EOF
-from setuptools import setup, find_packages
-
-setup(
-    name='utils',
-    version='0.1',
-    packages=find_packages(),
-    description='Glue utils',
-    include_package_data=True
-)
-EOF
-EOT
-  }
-  triggers = {
-    src_content_hash = sha256(join("", [
-      for f in fileset("${path.module}/src", "**") : filesha256("${path.module}/src/${f}")]
-    ))
-  }
-}
-
-
-
-
-resource "null_resource" "create_utils_whl" {
-  depends_on = [null_resource.ensure_setup_py]
-
-  triggers = {
-    src_content_hash = sha256(join("", [
-      for f in fileset("${path.module}/src", "**") : filesha256("${path.module}/src/${f}")]
-    ))
-  }
-
-  provisioner "local-exec" {
-    command = <<EOT
-      rm -rf ./dist ./utils-0.1-py3-none-any.whl
-      docker build -t glue-job-builder .
-      # Find the container ID for a dummy container
-      CID=$(docker create glue-job-builder)
-      docker cp $CID:/out/utils-0.1-py3-none-any.whl ./utils-0.1-py3-none-any.whl
-      docker rm $CID
-    EOT
-  }
-}
-
-
-data "local_file" "utils_whl" {
-  filename   = "${path.module}/utils-0.1-py3-none-any.whl"
-  depends_on = [null_resource.create_utils_whl]
-}
-
+# The following blocks were removed because the wheel file is now built by the buildspec.yml
+# resource "null_resource" "ensure_setup_py"
+# resource "null_resource" "create_utils_whl"
+# data "local_file" "utils_whl"
 
 module "utils_bucket" {
   source    = "../../modules/s3/s3_objects"
@@ -92,14 +42,13 @@ module "utils_bucket" {
 
   create_objects = [
     {
+      # The buildspec now creates this wheel file in the job's directory before Terraform runs.
       key    = "jobs/${var.job_name}/utils-0.1-py3-none-any.whl"
-      source = data.local_file.utils_whl.filename
-      etag   = data.local_file.utils_whl.content_md5
+      source = "${path.module}/utils-0.1-py3-none-any.whl"
+      etag   = filemd5("${path.module}/utils-0.1-py3-none-any.whl")
       tags   = local.common_tags
     }
   ]
-
-  depends_on = [null_resource.create_utils_whl, data.local_file.utils_whl]
 }
 
 module "utils_requirements" {
@@ -130,8 +79,8 @@ module "glue_job" {
   job_arguments = merge(
     local.job_config.default_arguments,
     {
-      "--TempDir"        = "s3://${var.glue_assets_bucket}/temp/",
-      "--extra-py-files" = "s3://${var.utils_bucket_name}/jobs/${var.job_name}/utils-0.1-py3-none-any.whl",
+      "--TempDir"                   = "s3://${var.glue_assets_bucket}/temp/",
+      "--extra-py-files"            = "s3://${var.utils_bucket_name}/jobs/${var.job_name}/utils-0.1-py3-none-any.whl",
       "--additional-python-modules" = "-r,s3://${var.utils_bucket_name}/jobs/${var.job_name}/requirements.txt"
     }
   )

@@ -29,22 +29,43 @@ phases:
         fi
         echo "Changed jobs: $CHANGED_JOBS"
 
+      - echo "Building Python wheel artifacts with Docker..."
+      - |
+        # This assumes your Dockerfile is at the root of the repository.
+        # This requires the CodeBuild project to be in privileged mode.
+        for job in $CHANGED_JOBS; do
+          if [ -d "jobs/$job" ]; then
+            cd jobs/$job
+            rm -rf ./dist ./utils-0.1-py3-none-any.whl
+            # Build the docker image
+            docker build -t glue-job-builder .
+            # Find the container ID for a dummy container
+            CID=$(docker create glue-job-builder)
+            # Copy the wheel file from the container
+            docker cp $CID:/out/utils-0.1-py3-none-any.whl ./utils-0.1-py3-none-any.whl
+            # Remove the temporary container
+            docker rm $CID
+            cd ../../
+          fi
+        done
+
   build:
     commands:
       - echo "Running terraform PLAN in each changed job"
       - |
         for job in $CHANGED_JOBS; do
-          echo "Processing job: $job"
-          # Use the -chdir flag to run Terraform from the job's directory
-          # This keeps the shell at the root, making module paths consistent
-          terraform -chdir=jobs/$job init -backend-config=codepipeline.tfbackend
-          terraform -chdir=jobs/$job plan -var-file=codepipeline.tfvars -out=tfplan
-          
-          # Check if the tfplan file was successfully created before trying to show it
-          if [ -f "jobs/$job/tfplan" ]; then
-            terraform show jobs/$job/tfplan
-          else
-            echo "Failed to create tfplan file for job: $job"
+          if [ -d "jobs/$job" ]; then
+            echo "Processing job: $job"
+            # Use the -chdir flag to run Terraform from the job's directory
+            terraform -chdir=jobs/$job init -backend-config=codepipeline.tfbackend
+            terraform -chdir=jobs/$job plan -var-file=codepipeline.tfvars -out=tfplan
+            
+            # Check if the tfplan file was successfully created before trying to show it
+            if [ -f "jobs/$job/tfplan" ]; then
+              terraform show jobs/$job/tfplan
+            else
+              echo "Failed to create tfplan file for job: $job"
+            fi
           fi
         done
 
