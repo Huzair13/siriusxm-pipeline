@@ -1,0 +1,5 @@
+bucket         = "your-terraform-state-bucket"
+key            = "glue-jobs/${job_name}/terraform.tfstate"
+region         = "your-aws-region"
+encrypt        = true
+dynamodb_table = "your-terraform-state-lock-table"
