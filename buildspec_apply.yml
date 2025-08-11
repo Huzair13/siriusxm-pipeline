@@ -34,9 +34,12 @@
 
 
 version: 0.2
+
 env:
   variables:
     TF_PLUGIN_CACHE_DIR: /root/.terraform.d/plugin-cache
+    # Set ARTIFACT_BUCKET in the CodeBuild project / pipeline env
+    # Optionally pass COMMIT_TO_APPLY at build start to apply a specific commit
 
 phases:
   install:
@@ -46,19 +49,34 @@ phases:
       - unzip -o terraform_1.5.7_linux_amd64.zip && mv terraform /usr/local/bin/
       - mkdir -p "${TF_PLUGIN_CACHE_DIR}"
       - terraform version
+
   pre_build:
     commands:
-      - echo "Discovering jobs with saved plans"
       - |
+        set -e
+        ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET env var}
+        if [ -n "${COMMIT_TO_APPLY:-}" ]; then
+          COMMIT="$COMMIT_TO_APPLY"
+        else
+          COMMIT=$(aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/latest.txt" - || true)
+        fi
+        if [ -z "$COMMIT" ]; then
+          echo "No COMMIT provided and latest.txt missing. Nothing to apply."; exit 0
+        fi
+        echo "Fetching artifacts for commit: $COMMIT"
+        aws s3 sync "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/jobs/" jobs/
+        echo "Fetched tree (first 200 lines):" && ls -R jobs | sed -n '1,200p'
+      - |
+        echo "Discovering jobs with saved plans"
         CHANGED_JOBS=$(find jobs -maxdepth 2 -type f -name tfplan -printf '%h\n' 2>/dev/null | awk -F'/' '{print $2}' | sort -u)
         echo "Jobs to apply: ${CHANGED_JOBS:-<none>}"
       - |
         for job in $CHANGED_JOBS; do
           [ -d "jobs/$job" ] || continue
-          # Sanity: artifacts must exist (built in Plan)
           [ -f "jobs/$job/utils-0.1-py3-none-any.whl" ] || { echo "Missing wheel for $job"; exit 1; }
           [ -f "jobs/$job/requirements.txt" ] || { echo "Missing requirements.txt for $job"; exit 1; }
         done
+
   build:
     commands:
       - |
@@ -80,13 +98,9 @@ phases:
 
 artifacts:
   files:
-    - jobs/**/tfplan
     - jobs/**/tfplan.txt
     - jobs/**/tfplan.json
-    - jobs/**/utils-0.1-py3-none-any.whl
-    - jobs/**/requirements.txt
   discard-paths: no
-
 
 cache:
   paths:

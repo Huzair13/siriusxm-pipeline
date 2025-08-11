@@ -107,9 +107,12 @@
 #     - /root/.terraform.d/plugin-cache/**
 
 version: 0.2
+
 env:
   variables:
     TF_PLUGIN_CACHE_DIR: /root/.terraform.d/plugin-cache
+    # Set ARTIFACT_BUCKET in the CodeBuild project / pipeline env
+    # ARTIFACT_BUCKET: my-tf-artifacts-bucket
 
 phases:
   install:
@@ -120,6 +123,7 @@ phases:
       - mkdir -p "${TF_PLUGIN_CACHE_DIR}"
       - terraform version
       - pip install -r requirements.txt
+
   pre_build:
     commands:
       - echo "Detecting changed jobs"
@@ -132,6 +136,7 @@ phases:
           CHANGED_JOBS=$(ls -1 jobs || true)
         fi
       - echo "CHANGED_JOBS=$CHANGED_JOBS"
+
       - echo "Build wheels for changed jobs"
       - |
         for job in $CHANGED_JOBS; do
@@ -144,6 +149,7 @@ phases:
           docker rm "$CID"
           popd >/dev/null
         done
+
   build:
     commands:
       - |
@@ -154,10 +160,32 @@ phases:
           terraform -chdir="jobs/$job" fmt -recursive
           terraform -chdir="jobs/$job" init -input=false -backend-config=terraform.tfbackend
           terraform -chdir="jobs/$job" validate -no-color
-          terraform -chdir="jobs/$job" plan -no-color -input=false -var-file=terraform.tfvars -out=tfplan -detailed-exitcode || EXIT=$?
+          # plan; allow detailed exit codes without failing the build
+          if terraform -chdir="jobs/$job" plan -no-color -input=false -var-file=terraform.tfvars -out=tfplan -detailed-exitcode; then
+            :
+          else
+            EXIT=$?; [ "$EXIT" -eq 2 ] || exit "$EXIT"
+          fi
           terraform -chdir="jobs/$job" show -no-color tfplan > "tfplan.txt" || true
           terraform -chdir="jobs/$job" show -json tfplan > "tfplan.json" || true
         done
+
+  post_build:
+    commands:
+      - |
+        set -e
+        ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET env var}
+        COMMIT=${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual-$(date +%s)}
+        echo "Uploading plan artifacts to s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/jobs/"
+        aws s3 sync jobs/ "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/jobs/" \
+          --exclude "*" \
+          --include "*/tfplan" \
+          --include "*/tfplan.txt" \
+          --include "*/tfplan.json" \
+          --include "*/utils-*.whl" \
+          --include "*/requirements.txt"
+        aws s3 cp <(echo -n "${COMMIT}") "s3://${ARTIFACT_BUCKET}/runs/latest.txt"
+        echo "Uploaded artifacts for commit ${COMMIT}"
 
 artifacts:
   files:
