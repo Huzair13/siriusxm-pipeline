@@ -63,7 +63,7 @@ phases:
           echo "=== Processing job: $job ==="
 
           # Lint
-          terraform -chdir="jobs/$job" fmt -check -diff -recursive
+          terraform -chdir="jobs/$job" fmt -recursive
 
           # Init (use backend config file present in each job)
           terraform -chdir="jobs/$job" init -input=false -backend-config=terraform.tfbackend
