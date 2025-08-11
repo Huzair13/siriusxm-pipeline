@@ -127,6 +127,7 @@ phases:
   pre_build:
     commands:
       - echo "Detecting changed jobs"
+      - docker login --username "$DOCKER_HUB_USERNAME" --password "$DOCKER_HUB_PASSWORD"
       - git fetch origin "+refs/heads/*:refs/remotes/origin/*" --depth=50 || true
       - |
         if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
