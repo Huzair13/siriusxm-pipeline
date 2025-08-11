@@ -89,5 +89,5 @@ yarn-error.log
 *.tmp
 *.temp
 
-modules/
-modules/*
+modules_2/
+modules_2/*
