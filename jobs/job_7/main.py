@@ -6,7 +6,6 @@ This script serves as the entry point for the AWS Glue Python Shell job.
 It handles parameter parsing, validation, logging setup, and exception handling.
 """
 
-#dsads
 import sys
 import os
 import uuid
