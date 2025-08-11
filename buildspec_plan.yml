@@ -185,7 +185,10 @@ phases:
           --include "*/tfplan.json" \
           --include "*/utils-*.whl" \
           --include "*/requirements.txt"
-        aws s3 cp <(echo -n "${COMMIT}") "s3://${ARTIFACT_BUCKET}/runs/latest.txt"
+
+        # Write 'latest.txt' without process substitution
+        printf %s "$COMMIT" | aws s3 cp - "s3://${ARTIFACT_BUCKET}/runs/latest.txt" \
+          --content-type text/plain --cache-control no-store
         echo "Uploaded artifacts for commit ${COMMIT}"
 
 artifacts:
