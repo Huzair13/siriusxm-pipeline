@@ -18,7 +18,7 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 module "glue_assets_bucket" {
-  source    = "../../modules/s3/s3_objects"
+  source    = "../../terraform_modules/s3/s3_objects"
   bucket_id = var.glue_assets_bucket
 
   create_objects = [
@@ -37,7 +37,7 @@ module "glue_assets_bucket" {
 # data "local_file" "utils_whl"
 
 module "utils_bucket" {
-  source    = "../../modules/s3/s3_objects"
+  source    = "../../terraform_modules/s3/s3_objects"
   bucket_id = var.utils_bucket_name
 
   create_objects = [
@@ -52,7 +52,7 @@ module "utils_bucket" {
 }
 
 module "utils_requirements" {
-  source    = "../../modules/s3/s3_objects"
+  source    = "../../terraform_modules/s3/s3_objects"
   bucket_id = var.utils_bucket_name
 
   create_objects = [
@@ -67,7 +67,7 @@ module "utils_requirements" {
 
 # Glue Job and Trigger
 module "glue_job" {
-  source = "../../modules/glue"
+  source = "../../terraform_modules/glue"
 
   job_name            = var.job_name
   glue_role_arn       = var.glue_role_arn
