@@ -15,6 +15,12 @@ phases:
 
   pre_build:
     commands:
+      # Fix 1: Authenticate to Docker Hub to avoid pull rate limit errors.
+      # You must set DOCKER_HUB_USERNAME and DOCKER_HUB_PASSWORD as
+      # environment variables in your CodeBuild project.
+      - echo "Logging in to Docker Hub"
+      - docker login --username $DOCKER_HUB_USERNAME --password $DOCKER_HUB_PASSWORD
+      
       - echo "Detecting changed jobs for PLAN"
       - |
         # Check if a previous commit exists (handles the first commit case)
@@ -52,12 +58,12 @@ phases:
   build:
     commands:
       - echo "Running terraform PLAN in each changed job"
-      - pwd
       - |
         for job in $CHANGED_JOBS; do
           if [ -d "jobs/$job" ]; then
             echo "Processing job: $job"
-            # Use the -chdir flag to run Terraform from the job's directory
+            # Fix 2: Use the -chdir flag to run Terraform from the job's directory
+            # without changing the current working directory of the shell.
             terraform -chdir=jobs/$job init -backend-config=codepipeline.tfbackend
             terraform -chdir=jobs/$job plan -var-file=codepipeline.tfvars -out=tfplan
             
