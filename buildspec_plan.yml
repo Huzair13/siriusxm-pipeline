@@ -17,7 +17,7 @@ phases:
       - unzip -o terraform_1.5.7_linux_amd64.zip
       - mv terraform /usr/local/bin/
       - terraform version
-      - mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+      # - mkdir -p "${TF_PLUGIN_CACHE_DIR}"
       - pip install -r requirements.txt
 
   pre_build:
@@ -80,6 +80,7 @@ phases:
 
           # Always render a human and JSON plan for artifacting
           terraform -chdir="jobs/$job" show -no-color tfplan > "tfplan.txt" || true
+          terraform -chdir="jobs/$job" show -no-color tfplan
           terraform -chdir="jobs/$job" show -json tfplan > "tfplan.json" || true
 
           # Track non-fatal (exit 2) vs fatal (exit 1)
