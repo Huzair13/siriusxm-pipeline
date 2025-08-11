@@ -1,4 +1,4 @@
-bucket         = "terraform-state-talend-migration-us-east-1"
+bucket         = "terraform-state-talend-migrations-us-east-1"
 key            = "glue-jobs/job_6/terraform.tfstate"
 region         = "us-east-1"
 encrypt        = true
