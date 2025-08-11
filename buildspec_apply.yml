@@ -1,33 +1,89 @@
+# version: 0.2
+
+# phases:
+#   install:
+#     commands:
+#       - echo "Installing unzip"
+#       - yum update -y
+#       - yum install -y unzip
+#       - rm -rf terraform
+#       - "curl -O https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip"
+#       - "unzip terraform_1.5.7_linux_amd64.zip"
+#       - "mv terraform /usr/local/bin/"
+#       - "terraform version"
+#       - pip install -r requirements.txt
+
+#   pre_build:
+#     commands:
+#       - echo "Detecting changed jobs for APPLY"
+#       - |
+#         CHANGED_JOBS=$(ls jobs)  # You may refine this detection based on artifact presence
+#       - echo "Changed jobs: $CHANGED_JOBS"
+#   build:
+#     commands:
+#       - echo "Running terraform APPLY in each changed job"
+#       - |
+#         for job in $CHANGED_JOBS; do
+#           if [ -f "jobs/$job/tfplan" ]; then
+#             cd jobs/$job
+#             terraform init -backend-config=codepipeline.tfbackend
+#             terraform apply -var-file=codepipeline.tfvars tfplan
+#             cd ../../
+#           fi
+#         done
+
+
 version: 0.2
+env:
+  variables:
+    TF_PLUGIN_CACHE_DIR: /root/.terraform.d/plugin-cache
 
 phases:
   install:
     commands:
-      - echo "Installing unzip"
-      - yum update -y
-      - yum install -y unzip
-      - rm -rf terraform
-      - "curl -O https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip"
-      - "unzip terraform_1.5.7_linux_amd64.zip"
-      - "mv terraform /usr/local/bin/"
-      - "terraform version"
-      - pip install -r requirements.txt
-
+      - yum update -y && yum install -y unzip
+      - curl -sSLO https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
+      - unzip -o terraform_1.5.7_linux_amd64.zip && mv terraform /usr/local/bin/
+      - mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+      - terraform version
   pre_build:
     commands:
-      - echo "Detecting changed jobs for APPLY"
+      - echo "Discovering jobs with saved plans"
       - |
-        CHANGED_JOBS=$(ls jobs)  # You may refine this detection based on artifact presence
-      - echo "Changed jobs: $CHANGED_JOBS"
-  build:
-    commands:
-      - echo "Running terraform APPLY in each changed job"
+        CHANGED_JOBS=$(find jobs -maxdepth 2 -type f -name tfplan -printf '%h\n' 2>/dev/null | awk -F'/' '{print $2}' | sort -u)
+        echo "Jobs to apply: ${CHANGED_JOBS:-<none>}"
       - |
         for job in $CHANGED_JOBS; do
-          if [ -f "jobs/$job/tfplan" ]; then
-            cd jobs/$job
-            terraform init -backend-config=codepipeline.tfbackend
-            terraform apply -var-file=codepipeline.tfvars tfplan
-            cd ../../
+          [ -d "jobs/$job" ] || continue
+          # Sanity: artifacts must exist (built in Plan)
+          [ -f "jobs/$job/utils-0.1-py3-none-any.whl" ] || { echo "Missing wheel for $job"; exit 1; }
+          [ -f "jobs/$job/requirements.txt" ] || { echo "Missing requirements.txt for $job"; exit 1; }
+        done
+  build:
+    commands:
+      - |
+        set -e
+        [ -z "$CHANGED_JOBS" ] && echo "No tfplan found. Nothing to apply." && exit 0
+        APPLY_EXIT=0
+        for job in $CHANGED_JOBS; do
+          [ -d "jobs/$job" ] || continue
+          echo "=== Applying $job ==="
+          terraform -chdir="jobs/$job" init -input=false -backend-config=terraform.tfbackend
+          if terraform -chdir="jobs/$job" apply -input=false -no-color tfplan; then
+            echo "Apply OK: $job"
+          else
+            echo "Apply FAILED: $job"
+            APPLY_EXIT=1
           fi
         done
+        exit $APPLY_EXIT
+
+artifacts:
+  files:
+    - jobs/**/tfplan.txt
+    - jobs/**/tfplan.json
+  discard-paths: no
+
+cache:
+  paths:
+    - /root/.terraform.d/plugin-cache/**
