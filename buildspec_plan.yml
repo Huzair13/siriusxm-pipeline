@@ -105,3 +105,4 @@ artifacts:
 cache:
   paths:
     - /root/.terraform.d/plugin-cache/**
+
