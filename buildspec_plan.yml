@@ -64,8 +64,8 @@ phases:
             echo "Processing job: $job"
             # Fix 2: Use the -chdir flag to run Terraform from the job's directory
             # without changing the current working directory of the shell.
-            terraform -chdir=jobs/$job init -backend-config=codepipeline.tfbackend
-            terraform -chdir=jobs/$job plan -var-file=codepipeline.tfvars -out=tfplan
+            terraform -chdir=jobs/$job init -backend-config=terraform.tfbackend
+            terraform -chdir=jobs/$job plan -var-file=terraform.tfvars -out=tfplan
             
             # Check if the tfplan file was successfully created before trying to show it
             if [ -f "jobs/$job/tfplan" ]; then
