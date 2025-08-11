@@ -4,7 +4,8 @@ phases:
   install:
     commands:
       - echo "Installing unzip"
-      - apt-get update && apt-get install -y unzip
+      - yum update -y
+      - yum install -y unzip
       - echo "Downloading Terraform"
       - curl -O https://releases.hashicorp.com/terraform/1.5.6/terraform_1.5.6_linux_amd64.zip
       - echo "Unzipping Terraform"
@@ -12,6 +13,7 @@ phases:
       - mv terraform /usr/local/bin/
       - terraform version
       - pip install -r requirements.txt
+
 
   pre_build:
     commands:
