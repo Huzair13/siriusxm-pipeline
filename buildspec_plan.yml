@@ -16,7 +16,6 @@ phases:
       - "unzip terraform_1.5.7_linux_amd64.zip"
       - "mv terraform /usr/local/bin/"
       - "terraform version"
-      - mkdir -p "$TF_PLUGIN_CACHE_DIR"
       - pip install -r requirements.txt
 
   pre_build:
