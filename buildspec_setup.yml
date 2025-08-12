@@ -14,7 +14,10 @@ phases:
       - python3 --version || true
       - pip3 --version || true
       - if [ -f requirements.txt ]; then pip3 install -r requirements.txt; fi
-      - if ! aws --version >/dev/null 2>&1; then pip3 install awscli; fi
+      - |
+        if ! aws --version >/dev/null 2>&1; then
+          pip3 install awscli
+        fi
       - if [ -z "${MANIFEST_BUCKET}" ]; then echo "ERROR: MANIFEST_BUCKET is not set"; exit 1; fi
       - echo "Using manifest s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"
 
