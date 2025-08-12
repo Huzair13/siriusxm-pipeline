@@ -28,23 +28,22 @@ phases:
       - "INIT_JOBS=\"$(python3 -c 'import json; print(\" \".join(sorted(set(map(str, json.load(open(\"/tmp/initialized-jobs.json\")))))))')\""
       - "echo \"Already initialized => ${INIT_JOBS:-none}\""
       - "if [ -n \"${JOBS_FROM_ENV}\" ]; then JOB_LIST=\"${JOBS_FROM_ENV}\"; SOURCE=\"override\"; else JOB_LIST=\"$(python3 -c 'import os; ts=lambda s: set(s.split()) if s and s.strip() else set(); print(\" \".join(sorted(ts(os.environ.get(\"JOBS_ALL\",\"\")) - ts(os.environ.get(\"INIT_JOBS\",\"\")))))')\"; SOURCE=\"new-folders\"; fi"
-      - "if [ -z \"${JOB_LIST:-}\" ]; then echo 'No new jobs to initialize'; [ \"${DRY_RUN}\" = \"true\" ] && exit 0 || exit 0; fi"
       - "echo \"Source => ${SOURCE}\""
-      - "echo \"Jobs to initialize => ${JOB_LIST}\""
-      - "echo \"${JOB_LIST}\" > /tmp/job_list.txt"
+      - "echo \"Jobs to initialize => ${JOB_LIST:-<none>}\""
+      - "echo \"${JOB_LIST:-}\" > /tmp/job_list.txt"
 
   build:
     commands:
-      - JOB_LIST="$(cat /tmp/job_list.txt 2>/dev/null || true)"
-      - if [ -z "${JOB_LIST:-}" ]; then echo "No new jobs to initialize. Exiting build phase successfully."; exit 0; fi
-      - echo "Running setup_glue_job.py for: ${JOB_LIST}"
-      - if [ "${DRY_RUN}" = "true" ]; then echo "[DRY RUN] python3 setup_glue_job.py ${JOB_LIST}"; else python3 setup_glue_job.py ${JOB_LIST}; fi
+      - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\""
+      - "if [ -z \"${JOB_LIST:-}\" ]; then echo \"No new jobs to initialize. Exiting build phase successfully.\"; exit 0; fi"
+      - "echo \"Running setup_glue_job.py for: ${JOB_LIST}\""
+      - "if [ \"${DRY_RUN}\" = \"true\" ]; then echo \"[DRY RUN] python3 setup_glue_job.py ${JOB_LIST}\"; else python3 setup_glue_job.py ${JOB_LIST}; fi"
 
   post_build:
     commands:
-      - if [ "${DRY_RUN}" = "true" ]; then echo "[DRY RUN] Skipping manifest update"; exit 0; fi
-      - JOB_LIST="$(cat /tmp/job_list.txt 2>/dev/null || true)"
-      - if [ -z "${JOB_LIST:-}" ]; then echo "No changes to manifest."; else python3 -c 'import json,os;p="/tmp/initialized-jobs.json";cur=set(json.load(open(p)));cur|=set(os.environ.get("JOB_LIST","").split());open(p,"w").write(json.dumps(sorted(cur)))'; aws s3 cp /tmp/initialized-jobs.json "s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"; echo "Manifest updated"; fi
+      - "if [ \"${DRY_RUN}\" = \"true\" ]; then echo \"[DRY RUN] Skipping manifest update\"; exit 0; fi"
+      - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\""
+      - "if [ -z \"${JOB_LIST:-}\" ]; then echo \"No changes to manifest.\"; else python3 -c 'import json,os;p=\"/tmp/initialized-jobs.json\";cur=set(json.load(open(p)));cur|=set(os.environ.get(\"JOB_LIST\",\"\\n\").split());open(p,\"w\").write(json.dumps(sorted(cur)))'; aws s3 cp /tmp/initialized-jobs.json \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}\"; echo \"Manifest updated\"; fi"
 
 artifacts:
   files:
