@@ -2,102 +2,94 @@ version: 0.2
 
 env:
   variables:
-    MANIFEST_BUCKET: "terraform-state-talend-migrations-us-east-1"                 # e.g., my-ci-state-bucket
+    MANIFEST_BUCKET: "terraform-state-talend-migrations-us-east-1"                            # set in project env, e.g., my-ci-state-bucket
     MANIFEST_KEY: "glue/setup/initialized-jobs.json"
-    JOBS: ""                            # optional override: "job_6 job_7" or "job_6,job_7"
-    DRY_RUN: "false"                    # set "true" to preview
+    JOBS: ""                                       # optional override: "job_6 job_7" or "job_6,job_7"
+    DRY_RUN: "false"
 
 phases:
   install:
+    runtime-versions:
+      python: 3.11
     commands:
       - set -euo pipefail
-      - echo "Python: $(python3 --version || true)"
-      - echo "Pip: $(pip3 --version || true)"
+      - python3 --version || true
+      - pip3 --version || true
       - if [ -f requirements.txt ]; then pip3 install -r requirements.txt; fi
-      - |
-        if ! aws --version >/dev/null 2>&1; then
-          echo "awscli not found; installing..."
-          pip3 install awscli
-        fi
+      - if ! aws --version >/dev/null 2>&1; then pip3 install awscli; fi
       - |
         if [ -z "${MANIFEST_BUCKET}" ]; then
-          echo "ERROR: MANIFEST_BUCKET is not set."
+          echo "ERROR: MANIFEST_BUCKET is not set"
           exit 1
         fi
-        echo "State manifest: s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"
+        echo "Using manifest s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"
 
   pre_build:
     commands:
-      - echo "Resolving jobs to initialize (one-time setup)…"
-      # Normalize optional override from env
-      - JOBS_FROM_ENV="$(echo "${JOBS}" | tr ',' ' ' | xargs || true)"
-      # List current job folders in repo
       - |
+        # Normalize optional override from env (commas -> spaces)
+        JOBS_FROM_ENV="$(echo "${JOBS}" | tr ',' ' ' | xargs || true)"
+
+        # List all current job folders
         list_all_jobs() {
           if [ -d jobs ]; then
-            # prefer 'find' with -printf; fallback to ls if -printf unsupported
             find jobs -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null \
               || ls -d jobs/*/ 2>/dev/null | xargs -n1 basename
           fi
         }
         JOBS_ALL="$(list_all_jobs || true)"
-        echo "Found job folders: ${JOBS_ALL:-<none>}"
+        echo "Found job folders => ${JOBS_ALL:-none}"
 
-      # Pull manifest from S3 (create empty if missing)
-      - |
+        # Pull manifest (or seed empty)
         TMP_MANIFEST="/tmp/initialized-jobs.json"
         if aws s3api head-object --bucket "${MANIFEST_BUCKET}" --key "${MANIFEST_KEY}" >/dev/null 2>&1; then
           aws s3 cp "s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}" "${TMP_MANIFEST}"
-          echo "Loaded existing manifest."
+          echo "Loaded manifest"
         else
-          echo '[]' > "${TMP_MANIFEST}"
-          echo "No manifest found; starting fresh."
+          echo "[]" > "${TMP_MANIFEST}"
+          echo "No manifest found; starting fresh"
         fi
-        echo "Current manifest contents:"; cat "${TMP_MANIFEST}"
 
-      # Compute NEW jobs = current folders - already-initialized (unless override provided)
-      - |
+        # Compute jobs to initialize
         if [ -n "${JOBS_FROM_ENV}" ]; then
           JOB_LIST="${JOBS_FROM_ENV}"
-          SOURCE="override (env:JOBS)"
+          SOURCE="override"
         else
-          # parse JSON array -> space list
           INIT_JOBS="$(python3 - <<'PY'
-          import json,sys
-          data=json.load(open("/tmp/initialized-jobs.json"))
-          print(" ".join(sorted(set(data))))
+          import json
+          with open("/tmp/initialized-jobs.json") as f:
+              data = json.load(f)
+          print(" ".join(sorted(set(map(str, data)))))
           PY
-        )"
-          echo "Already initialized: ${INIT_JOBS:-<none>}"
-          # set difference
+          )"
+          export INIT_JOBS
+          export JOBS_ALL
           JOB_LIST="$(python3 - <<'PY'
-        import sys,subprocess,shlex
-        def to_set(s): return set(s.split()) if s.strip() else set()
-        # read shell env via os
-        import os
-        jobs_all=os.environ.get("JOBS_ALL","")
-        init_jobs=os.environ.get("INIT_JOBS","")
-        new = to_set(jobs_all) - to_set(init_jobs)
-        print(" ".join(sorted(new)))
-        PY
-        )"
-          SOURCE="detected new folders (uninitialized)"
+          import os
+          def toset(s): return set(s.split()) if s and s.strip() else set()
+          jobs_all = toset(os.environ.get("JOBS_ALL",""))
+          init = toset(os.environ.get("INIT_JOBS",""))
+          print(" ".join(sorted(jobs_all - init)))
+          PY
+          )"
+          SOURCE="new-folders"
         fi
 
         if [ -z "${JOB_LIST:-}" ]; then
-          echo "No new jobs to initialize."
+          echo "No new jobs to initialize"
           if [ "${DRY_RUN}" = "true" ]; then exit 0; fi
-          # nothing to do; exit successfully so manual trigger doesn't fail
           exit 0
         fi
 
-        echo "Job source: ${SOURCE}"
-        echo "Jobs to initialize: ${JOB_LIST}"
+        echo "Source => ${SOURCE}"
+        echo "Jobs to initialize => ${JOB_LIST}"
+        echo "${JOB_LIST}" > /tmp/job_list.txt
 
   build:
     commands:
       - |
-        echo "Executing setup_glue_job.py for: ${JOB_LIST}"
+        JOB_LIST="$(cat /tmp/job_list.txt)"
+        echo "Running setup_glue_job.py for: ${JOB_LIST}"
         if [ "${DRY_RUN}" = "true" ]; then
           echo "[DRY RUN] python3 setup_glue_job.py ${JOB_LIST}"
         else
@@ -108,21 +100,22 @@ phases:
     commands:
       - |
         if [ "${DRY_RUN}" = "true" ]; then
-          echo "[DRY RUN] Skipping manifest update."
+          echo "[DRY RUN] Skipping manifest update"
           exit 0
         fi
-        # Merge newly initialized jobs into manifest and push to S3
-        python3 - "$JOBS" "$JOBS_ALL" "$JOB_LIST" <<'PY'
+
+        JOB_LIST="$(cat /tmp/job_list.txt)"
+        python3 - "$JOB_LIST" <<'PY'
         import json, os, sys
         tmp = "/tmp/initialized-jobs.json"
         with open(tmp) as f: cur = set(json.load(f))
-        job_list = set(os.environ.get("JOB_LIST","").split())
-        cur |= job_list
+        new = set(os.environ.get("JOB_LIST","").split())
+        cur |= new
         with open(tmp, "w") as f: json.dump(sorted(cur), f)
         print("Updated manifest:", sorted(cur))
         PY
-        cat /tmp/initialized-jobs.json
         aws s3 cp /tmp/initialized-jobs.json "s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"
+        echo "Manifest updated"
 
 artifacts:
   files:
