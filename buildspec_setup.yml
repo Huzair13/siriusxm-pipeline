@@ -10,65 +10,40 @@ env:
 phases:
   install:
     commands:
-      - "set -euo pipefail"
-      - "python3 --version || true"
-      - "pip3 --version || true"
-      - "if [ -f requirements.txt ]; then pip3 install -r requirements.txt; fi"
-      - "if ! aws --version >/dev/null 2>&1; then pip3 install awscli; fi"
-      - "if [ -z \"${MANIFEST_BUCKET}\" ]; then echo 'ERROR: MANIFEST_BUCKET is not set'; exit 1; fi"
-      - "echo \"Using manifest s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}\""
+      - set -euo pipefail
+      - python3 --version || true
+      - pip3 --version || true
+      - if [ -f requirements.txt ]; then pip3 install -r requirements.txt; fi
+      - if ! aws --version >/dev/null 2>&1; then pip3 install awscli; fi
+      - if [ -z "${MANIFEST_BUCKET}" ]; then echo 'ERROR: MANIFEST_BUCKET is not set'; exit 1; fi
+      - echo "Using manifest s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"
 
   pre_build:
     commands:
-      - "JOBS_FROM_ENV=\"$(echo \"${JOBS}\" | tr ',' ' ' | xargs || true)\""
-      - "JOBS_ALL=\"$( (find jobs -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' 2>/dev/null) || (ls -d jobs/*/ 2>/dev/null | xargs -n1 basename) || true )\""
-      - "echo \"Found job folders => ${JOBS_ALL:-none}\""
-      - "TMP_MANIFEST=\"/tmp/initialized-jobs.json\""
-      - "if aws s3api head-object --bucket \"${MANIFEST_BUCKET}\" --key \"${MANIFEST_KEY}\" >/dev/null 2>&1; then aws s3 cp \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}\" \"${TMP_MANIFEST}\"; echo 'Loaded manifest'; else echo '[]' > \"${TMP_MANIFEST}\"; echo 'No manifest found; starting fresh'; fi"
-      - "INIT_JOBS=\"$(python3 -c 'import json; print(\" \".join(sorted(set(map(str, json.load(open(\"/tmp/initialized-jobs.json\")))))))')\""
-      - "echo \"Already initialized => ${INIT_JOBS:-none}\""
-      - "if [ -n \"${JOBS_FROM_ENV}\" ]; then JOB_LIST=\"${JOBS_FROM_ENV}\"; SOURCE=\"override\"; else JOB_LIST=\"$(python3 -c 'import os; ts=lambda s: set(s.split()) if s and s.strip() else set(); print(\" \".join(sorted(ts(os.environ.get(\"JOBS_ALL\",\"\")) - ts(os.environ.get(\"INIT_JOBS\",\"\")))))')\"; SOURCE=\"new-folders\"; fi"
-      - "if [ -z \"${JOB_LIST:-}\" ]; then echo 'No new jobs to initialize'; [ \"${DRY_RUN}\" = \"true\" ] && exit 0 || exit 0; fi"
-      - "echo \"Source => ${SOURCE}\""
-      - "echo \"Jobs to initialize => ${JOB_LIST}\""
-      - "echo \"${JOB_LIST}\" > /tmp/job_list.txt"
+      - JOBS_FROM_ENV="$(echo "${JOBS}" | tr ',' ' ' | xargs || true)"
+      - JOBS_ALL="$((find jobs -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null) || (ls -d jobs/*/ 2>/dev/null | xargs -n1 basename) || true)"
+      - echo "Found job folders => ${JOBS_ALL:-none}"
+      - TMP_MANIFEST="/tmp/initialized-jobs.json"
+      - if aws s3api head-object --bucket "${MANIFEST_BUCKET}" --key "${MANIFEST_KEY}" >/dev/null 2>&1; then aws s3 cp "s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}" "${TMP_MANIFEST}"; echo 'Loaded manifest'; else echo '[]' > "${TMP_MANIFEST}"; echo 'No manifest found; starting fresh'; fi
+      - INIT_JOBS="$(python3 -c 'import json; print(" ".join(sorted(set(map(str, json.load(open("/tmp/initialized-jobs.json")))))))')"
+      - echo "Already initialized => ${INIT_JOBS:-none}"
+      - if [ -n "${JOBS_FROM_ENV}" ]; then JOB_LIST="${JOBS_FROM_ENV}"; SOURCE="override"; else JOB_LIST="$(python3 -c 'import os; ts=lambda s: set(s.split()) if s and s.strip() else set(); print(" ".join(sorted(ts(os.environ.get("JOBS_ALL","")) - ts(os.environ.get("INIT_JOBS","")))))')"; SOURCE="new-folders"; fi
+      - echo "Source => ${SOURCE}"
+      - echo "Jobs to initialize => ${JOB_LIST:-<none>}"
+      - echo "${JOB_LIST:-}" > /tmp/job_list.txt
 
   build:
     commands:
-      - JOB_LIST="$(cat /tmp/job_list.txt || true)"
-      - |
-        if [ -z "${JOB_LIST:-}" ]; then
-          echo "No new jobs to initialize. Exiting build phase."
-          # Exit the entire build successfully
-          exit 0
-        fi
+      - JOB_LIST="$(cat /tmp/job_list.txt 2>/dev/null || true)"
+      - if [ -z "${JOB_LIST:-}" ]; then echo "No new jobs to initialize. Exiting build phase successfully."; exit 0; fi
       - echo "Running setup_glue_job.py for: ${JOB_LIST}"
       - if [ "${DRY_RUN}" = "true" ]; then echo "[DRY RUN] python3 setup_glue_job.py ${JOB_LIST}"; else python3 setup_glue_job.py ${JOB_LIST}; fi
 
   post_build:
     commands:
-      - |
-        if [ "${DRY_RUN}" = "true" ]; then
-          echo "[DRY RUN] Skipping manifest update"
-          exit 0
-        fi
-      - JOB_LIST="$(cat /tmp/job_list.txt || true)"
-      - |
-        if [ -z "${JOB_LIST:-}" ]; then
-          echo "No changes to manifest."
-        else
-          python3 - <<'PY'
-          import json, os
-          p="/tmp/initialized-jobs.json"
-          cur=set(json.load(open(p)))
-          cur |= set(os.environ.get("JOB_LIST","").split())
-          open(p,"w").write(json.dumps(sorted(cur)))
-          PY
-          # Add --sse/--sse-kms-key-id if your bucket requires encryption
-          aws s3 cp /tmp/initialized-jobs.json "s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"
-          echo "Manifest updated"
-        fi
-
+      - if [ "${DRY_RUN}" = "true" ]; then echo "[DRY RUN] Skipping manifest update"; exit 0; fi
+      - JOB_LIST="$(cat /tmp/job_list.txt 2>/dev/null || true)"
+      - if [ -z "${JOB_LIST:-}" ]; then echo "No changes to manifest."; else python3 -c 'import json,os;p="/tmp/initialized-jobs.json";cur=set(json.load(open(p)));cur|=set(os.environ.get("JOB_LIST","").split());open(p,"w").write(json.dumps(sorted(cur)))'; aws s3 cp /tmp/initialized-jobs.json "s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"; echo "Manifest updated"; fi
 
 artifacts:
   files:
