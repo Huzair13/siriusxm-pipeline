@@ -3,46 +3,37 @@
 # env:
 #   variables:
 #     TF_PLUGIN_CACHE_DIR: /root/.terraform.d/plugin-cache
-#   # Ensure CODEBUILD_SRC_DIR is the primary source
-#   # and AWS_DEFAULT_REGION is set in the CodeBuild project env.
+#     # Set ARTIFACT_BUCKET in the CodeBuild project / pipeline env
+#     # ARTIFACT_BUCKET: my-tf-artifacts-bucket
 
 # phases:
 #   install:
 #     commands:
-#       - echo "Installing unzip"
-#       - yum update -y
-#       - yum install -y unzip
-#       - rm -rf terraform
+#       - yum update -y && yum install -y unzip
 #       - curl -sSLO https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
-#       - unzip -o terraform_1.5.7_linux_amd64.zip
-#       - mv terraform /usr/local/bin/
-#       - terraform version
+#       - unzip -o terraform_1.5.7_linux_amd64.zip && mv terraform /usr/local/bin/
 #       - mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+#       - terraform version
 #       - pip install -r requirements.txt
 
 #   pre_build:
 #     commands:
-#       - echo "Logging in to Docker Hub"
-#       - docker login --username "$DOCKER_HUB_USERNAME" --password "$DOCKER_HUB_PASSWORD"
-
-#       - echo "Preparing git history to detect changed jobs"
-#       - git fetch --no-tags --prune --depth=2 origin || true
+#       - echo "Detecting changed jobs"
+#       # - docker login --username "$DOCKER_HUB_USERNAME" --password "$DOCKER_HUB_PASSWORD"
+#       - git fetch origin "+refs/heads/*:refs/remotes/origin/*" --depth=50 || true
 #       - |
 #         if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
-#           # Compare last two commits; fallback to origin/main if needed
 #           BASE_COMMIT=$(git rev-parse HEAD^)
-#           CHANGED_JOBS=$(git diff --name-only "$BASE_COMMIT" HEAD | grep "^jobs/" | cut -d "/" -f2 | sort -u)
+#           CHANGED_JOBS=$(git diff --name-only "$BASE_COMMIT" HEAD | grep -E '^jobs/[^/]+/' | cut -d'/' -f2 | sort -u)
 #         else
-#           echo "First build or shallow clone without parent. Processing all jobs."
 #           CHANGED_JOBS=$(ls -1 jobs || true)
 #         fi
-#         echo "Changed jobs: $CHANGED_JOBS"
+#       - echo "CHANGED_JOBS=$CHANGED_JOBS"
 
-#       - echo "Building Python wheel artifacts with Docker for each changed job..."
+#       - echo "Build wheels for changed jobs"
 #       - |
 #         for job in $CHANGED_JOBS; do
 #           [ -d "jobs/$job" ] || continue
-#           echo "Building wheel for $job"
 #           pushd "jobs/$job" >/dev/null
 #           rm -rf ./dist ./utils-0.1-py3-none-any.whl
 #           docker build -t glue-job-builder .
@@ -54,65 +45,64 @@
 
 #   build:
 #     commands:
-#       - echo "Running Terraform fmt/validate/plan for changed jobs"
 #       - |
 #         set -e
-#         PLAN_EXIT=0
 #         for job in $CHANGED_JOBS; do
 #           [ -d "jobs/$job" ] || continue
-#           echo "=== Processing job: $job ==="
-
-#           # Lint
+#           echo "=== Planning $job ==="
 #           terraform -chdir="jobs/$job" fmt -recursive
-
-#           # Init (use backend config file present in each job)
 #           terraform -chdir="jobs/$job" init -input=false -backend-config=terraform.tfbackend
-
-#           # Validate
 #           terraform -chdir="jobs/$job" validate -no-color
-
-#           # Plan with detailed exit codes: 0=no changes, 2=changes, 1=error
+#           # plan; allow detailed exit codes without failing the build
 #           if terraform -chdir="jobs/$job" plan -no-color -input=false -var-file=terraform.tfvars -out=tfplan -detailed-exitcode; then
-#             EXIT=$?
+#             :
 #           else
-#             EXIT=$?
+#             EXIT=$?; [ "$EXIT" -eq 2 ] || exit "$EXIT"
 #           fi
-
-#           # Always render a human and JSON plan for artifacting
 #           terraform -chdir="jobs/$job" show -no-color tfplan > "tfplan.txt" || true
-#           terraform -chdir="jobs/$job" show -no-color tfplan
 #           terraform -chdir="jobs/$job" show -json tfplan > "tfplan.json" || true
-
-#           # Track non-fatal (exit 2) vs fatal (exit 1)
-#           if [ "$EXIT" -eq 1 ]; then
-#             echo "Terraform plan failed for $job"
-#             PLAN_EXIT=1
-#           elif [ "$EXIT" -eq 2 ]; then
-#             echo "Changes detected for $job"
-#           else
-#             echo "No changes for $job"
-#           fi
 #         done
-#         exit $PLAN_EXIT
+
+#   post_build:
+#     commands:
+#       - |
+#         set -e
+#         ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET env var}
+#         COMMIT=${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual-$(date +%s)}
+#         echo "Uploading plan artifacts to s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/jobs/"
+#         aws s3 sync jobs/ "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/jobs/" \
+#           --exclude "*" \
+#           --include "*/tfplan" \
+#           --include "*/tfplan.txt" \
+#           --include "*/tfplan.json" \
+#           --include "*/utils-*.whl" \
+#           --include "*/requirements.txt"
+
+#         # Write 'latest.txt' without process substitution
+#         printf %s "$COMMIT" | aws s3 cp - "s3://${ARTIFACT_BUCKET}/runs/latest.txt" \
+#           --content-type text/plain --cache-control no-store
+#         echo "Uploaded artifacts for commit ${COMMIT}"
 
 # artifacts:
 #   files:
 #     - jobs/**/tfplan
 #     - jobs/**/tfplan.txt
 #     - jobs/**/tfplan.json
+#     - jobs/**/utils-0.1-py3-none-any.whl
+#     - jobs/**/requirements.txt
 #   discard-paths: no
 
 # cache:
 #   paths:
 #     - /root/.terraform.d/plugin-cache/**
 
+
 version: 0.2
 
 env:
   variables:
     TF_PLUGIN_CACHE_DIR: /root/.terraform.d/plugin-cache
-    # Set ARTIFACT_BUCKET in the CodeBuild project / pipeline env
-    # ARTIFACT_BUCKET: my-tf-artifacts-bucket
+    # Set in project/pipeline: ARTIFACT_BUCKET=<your-bucket>
 
 phases:
   install:
@@ -121,26 +111,23 @@ phases:
       - curl -sSLO https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
       - unzip -o terraform_1.5.7_linux_amd64.zip && mv terraform /usr/local/bin/
       - mkdir -p "${TF_PLUGIN_CACHE_DIR}"
-      - terraform version
       - pip install -r requirements.txt
 
   pre_build:
     commands:
-      - echo "Detecting changed jobs"
-      # - docker login --username "$DOCKER_HUB_USERNAME" --password "$DOCKER_HUB_PASSWORD"
       - git fetch origin "+refs/heads/*:refs/remotes/origin/*" --depth=50 || true
       - |
         if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
           BASE_COMMIT=$(git rev-parse HEAD^)
-          CHANGED_JOBS=$(git diff --name-only "$BASE_COMMIT" HEAD | grep -E '^jobs/[^/]+/' | cut -d'/' -f2 | sort -u)
+          CHANGED_FILES=$(git diff --name-only "$BASE_COMMIT" HEAD || true)
         else
-          CHANGED_JOBS=$(ls -1 jobs || true)
+          CHANGED_FILES=$(ls -1 ** || true)
         fi
-      - echo "CHANGED_JOBS=$CHANGED_JOBS"
-
-      - echo "Build wheels for changed jobs"
+        CHANGED_JOBS=$(echo "$CHANGED_FILES" | awk -F/ '/^jobs\/[^/]+\// {print $2}' | sort -u)
+        JOBS_NEED_WHEEL=$(echo "$CHANGED_FILES" | awk -F/ '/^jobs\/[^/]+\/(src\/|requirements\.txt$|setup\.py$|pyproject\.toml$)/ {print $2}' | sort -u)
+        JOBS_CHANGED_MAINPY=$(echo "$CHANGED_FILES" | awk -F/ '/^jobs\/[^/]+\/main\.py$/ {print $2}' | sort -u)
       - |
-        for job in $CHANGED_JOBS; do
+        for job in $JOBS_NEED_WHEEL; do
           [ -d "jobs/$job" ] || continue
           pushd "jobs/$job" >/dev/null
           rm -rf ./dist ./utils-0.1-py3-none-any.whl
@@ -157,16 +144,10 @@ phases:
         set -e
         for job in $CHANGED_JOBS; do
           [ -d "jobs/$job" ] || continue
-          echo "=== Planning $job ==="
           terraform -chdir="jobs/$job" fmt -recursive
           terraform -chdir="jobs/$job" init -input=false -backend-config=terraform.tfbackend
           terraform -chdir="jobs/$job" validate -no-color
-          # plan; allow detailed exit codes without failing the build
-          if terraform -chdir="jobs/$job" plan -no-color -input=false -var-file=terraform.tfvars -out=tfplan -detailed-exitcode; then
-            :
-          else
-            EXIT=$?; [ "$EXIT" -eq 2 ] || exit "$EXIT"
-          fi
+          if terraform -chdir="jobs/$job" plan -no-color -input=false -var-file=terraform.tfvars -out=tfplan -detailed-exitcode; then :; else EXIT=$?; [ "$EXIT" -eq 2 ] || exit "$EXIT"; fi
           terraform -chdir="jobs/$job" show -no-color tfplan > "tfplan.txt" || true
           terraform -chdir="jobs/$job" show -json tfplan > "tfplan.json" || true
         done
@@ -177,27 +158,32 @@ phases:
         set -e
         ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET env var}
         COMMIT=${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual-$(date +%s)}
-        echo "Uploading plan artifacts to s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/jobs/"
-        aws s3 sync jobs/ "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/jobs/" \
-          --exclude "*" \
-          --include "*/tfplan" \
-          --include "*/tfplan.txt" \
-          --include "*/tfplan.json" \
-          --include "*/utils-*.whl" \
-          --include "*/requirements.txt"
 
-        # Write 'latest.txt' without process substitution
-        printf %s "$COMMIT" | aws s3 cp - "s3://${ARTIFACT_BUCKET}/runs/latest.txt" \
-          --content-type text/plain --cache-control no-store
-        echo "Uploaded artifacts for commit ${COMMIT}"
+        # tfplan artifacts for changed jobs
+        for job in $CHANGED_JOBS; do
+          [ -f "jobs/$job/tfplan" ]     && aws s3 cp "jobs/$job/tfplan"      "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/jobs/$job/tfplan"
+          [ -f "jobs/$job/tfplan.txt" ] && aws s3 cp "jobs/$job/tfplan.txt"  "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/jobs/$job/tfplan.txt"
+          [ -f "jobs/$job/tfplan.json" ]&& aws s3 cp "jobs/$job/tfplan.json" "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/jobs/$job/tfplan.json"
+        done
+
+        # wheel/requirements only when src (or deps files) changed
+        for job in $JOBS_NEED_WHEEL; do
+          [ -f "jobs/$job/utils-0.1-py3-none-any.whl" ] && aws s3 cp "jobs/$job/utils-0.1-py3-none-any.whl" "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/jobs/$job/utils-0.1-py3-none-any.whl"
+          [ -f "jobs/$job/requirements.txt" ] && aws s3 cp "jobs/$job/requirements.txt" "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/jobs/$job/requirements.txt"
+        done
+
+        # main.py only when it changed
+        for job in $JOBS_CHANGED_MAINPY; do
+          [ -f "jobs/$job/main.py" ] && aws s3 cp "jobs/$job/main.py" "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/jobs/$job/main.py"
+        done
+
+        printf %s "$COMMIT" | aws s3 cp - "s3://${ARTIFACT_BUCKET}/runs/latest.txt" --content-type text/plain --cache-control no-store
 
 artifacts:
   files:
     - jobs/**/tfplan
     - jobs/**/tfplan.txt
     - jobs/**/tfplan.json
-    - jobs/**/utils-0.1-py3-none-any.whl
-    - jobs/**/requirements.txt
   discard-paths: no
 
 cache:
