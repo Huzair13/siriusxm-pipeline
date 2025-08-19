@@ -109,6 +109,8 @@ phases:
         if [ -z "${GITHUB_TOKEN}" ]; then
           echo "[PB] ERROR: GITHUB_TOKEN empty" >&2
           exit 1
+        else
+          echo "[PB] GITHUB_TOKEN is set, length=${#GITHUB_TOKEN}"
         fi
         git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git"
         git push origin "${BRANCH}" && echo "[PB] push done"
