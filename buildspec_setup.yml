@@ -36,22 +36,50 @@ phases:
     commands:
       - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; if [ -z \"${JOB_LIST:-}\" ]; then echo \"No new jobs to initialize. Skipping setup.\"; else echo \"Running setup_glue_job.py for: ${JOB_LIST}\"; if [ \"${DRY_RUN}\" = \"true\" ]; then echo \"[DRY RUN] python3 setup_glue_job.py ${JOB_LIST}\"; else python3 setup_glue_job.py ${JOB_LIST}; fi; fi"
 
-  post_build:
-    commands:
-      - "if [ \"${DRY_RUN}\" = \"true\" ]; then echo \"[DRY RUN] Skipping manifest update\"; exit 0; fi"
-      - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; if [ -z \"${JOB_LIST:-}\" ]; then echo \"No changes to manifest.\"; else python3 -c 'import json,os;p=\"/tmp/initialized-jobs.json\";cur=set(json.load(open(p)));cur|=set(os.environ.get(\"JOB_LIST\",\"\\n\").split());open(p,\"w\").write(json.dumps(sorted(cur)))'; aws s3 cp /tmp/initialized-jobs.json \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}\"; echo \"Manifest updated\"; fi"
+  # post_build:
+  #   commands:
+  #     - "if [ \"${DRY_RUN}\" = \"true\" ]; then echo \"[DRY RUN] Skipping manifest update\"; exit 0; fi"
+  #     - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; if [ -z \"${JOB_LIST:-}\" ]; then echo \"No changes to manifest.\"; else python3 -c 'import json,os;p=\"/tmp/initialized-jobs.json\";cur=set(json.load(open(p)));cur|=set(os.environ.get(\"JOB_LIST\",\"\\n\").split());open(p,\"w\").write(json.dumps(sorted(cur)))'; aws s3 cp /tmp/initialized-jobs.json \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}\"; echo \"Manifest updated\"; fi"
 
-      # ---- Commit & push generated code back to GitHub (guarded) ----
-      - "echo '--- Push generated files back to GitHub ---'"
-      - "git config --global safe.directory '*'"
-      - "git config --global user.name \"${GIT_AUTHOR_NAME:-codebuild-bot}\""
-      - "git config --global user.email \"${GIT_AUTHOR_EMAIL:-codebuild-bot@users.noreply.github.com}\""
-      - "BRANCH=\"${CODEBUILD_WEBHOOK_HEAD_REF#refs/heads/}\"; if [ -z \"${BRANCH}\" ]; then if [ -n \"${CODEBUILD_SOURCE_VERSION:-}\" ] && echo \"${CODEBUILD_SOURCE_VERSION}\" | grep -q '^refs/heads/'; then BRANCH=\"${CODEBUILD_SOURCE_VERSION#refs/heads/}\"; elif [ -n \"${CODEBUILD_SOURCE_VERSION:-}\" ] && echo \"${CODEBUILD_SOURCE_VERSION}\" | grep -Eq '^[0-9a-f]{7,40}$'; then git fetch origin --prune >/dev/null 2>&1 || true; CANDIDATE=\"$(git branch -r --contains \"${CODEBUILD_SOURCE_VERSION}\" 2>/dev/null | sed -n 's|.*origin/||p' | head -n1)\"; BRANCH=\"${CANDIDATE}\"; fi; fi; BRANCH=\"${BRANCH:-${TARGET_BRANCH:-setup}}\"; echo \"Branch: ${BRANCH}\""
-      - "git fetch origin \"${BRANCH}:${BRANCH}\" || true && git checkout \"${BRANCH}\" || git checkout -B \"${BRANCH}\" && git pull --ff-only origin \"${BRANCH}\" || true && (git rev-parse --is-shallow-repository >/dev/null 2>&1 && git fetch --unshallow || true)"
-      - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; CHANGED=0; for j in ${JOB_LIST}; do git add \"jobs/${j}\" 2>/dev/null && CHANGED=1; done; if [ \"$CHANGED\" -eq 0 ]; then echo 'Nothing new to commit'; else git commit -m \"chore(setup): initialize Glue jobs (${JOB_LIST}) [skip ci]\" && git remote set-url origin \"https://x-access-token:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git\" && git push origin \"${BRANCH}\"; fi"
-      # - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; CHANGED=0; for j in ${JOB_LIST}; do git add \"jobs/${j}\" 2>/dev/null && CHANGED=1; done; if [ \"$CHANGED\" -eq 0 ]; then echo 'Nothing new to commit'; else git commit -m \"chore(setup): initialize Glue jobs (${JOB_LIST}) [skip ci]\" && git remote set-url origin \"https://x-access-token:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git\" && git push origin \"${BRANCH}\"; fi"
-      
-      
+  #     # ---- Commit & push generated code back to GitHub (guarded) ----
+  #     - "echo '--- Push generated files back to GitHub ---'"
+  #     - "git config --global safe.directory '*'"
+  #     - "git config --global user.name \"${GIT_AUTHOR_NAME:-codebuild-bot}\""
+  #     - "git config --global user.email \"${GIT_AUTHOR_EMAIL:-codebuild-bot@users.noreply.github.com}\""
+  #     - "BRANCH=\"${CODEBUILD_WEBHOOK_HEAD_REF#refs/heads/}\"; if [ -z \"${BRANCH}\" ]; then if [ -n \"${CODEBUILD_SOURCE_VERSION:-}\" ] && echo \"${CODEBUILD_SOURCE_VERSION}\" | grep -q '^refs/heads/'; then BRANCH=\"${CODEBUILD_SOURCE_VERSION#refs/heads/}\"; elif [ -n \"${CODEBUILD_SOURCE_VERSION:-}\" ] && echo \"${CODEBUILD_SOURCE_VERSION}\" | grep -Eq '^[0-9a-f]{7,40}$'; then git fetch origin --prune >/dev/null 2>&1 || true; CANDIDATE=\"$(git branch -r --contains \"${CODEBUILD_SOURCE_VERSION}\" 2>/dev/null | sed -n 's|.*origin/||p' | head -n1)\"; BRANCH=\"${CANDIDATE}\"; fi; fi; BRANCH=\"${BRANCH:-${TARGET_BRANCH:-setup}}\"; echo \"Branch: ${BRANCH}\""
+  #     - "git fetch origin \"${BRANCH}:${BRANCH}\" || true && git checkout \"${BRANCH}\" || git checkout -B \"${BRANCH}\" && git pull --ff-only origin \"${BRANCH}\" || true && (git rev-parse --is-shallow-repository >/dev/null 2>&1 && git fetch --unshallow || true)"
+  #     - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; CHANGED=0; for j in ${JOB_LIST}; do git add \"jobs/${j}\" 2>/dev/null && CHANGED=1; done; if [ \"$CHANGED\" -eq 0 ]; then echo 'Nothing new to commit'; else git commit -m \"chore(setup): initialize Glue jobs (${JOB_LIST}) [skip ci]\" && git remote set-url origin \"https://x-access-token:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git\" && git push origin \"${BRANCH}\"; fi"
+  #     # - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; CHANGED=0; for j in ${JOB_LIST}; do git add \"jobs/${j}\" 2>/dev/null && CHANGED=1; done; if [ \"$CHANGED\" -eq 0 ]; then echo 'Nothing new to commit'; else git commit -m \"chore(setup): initialize Glue jobs (${JOB_LIST}) [skip ci]\" && git remote set-url origin \"https://x-access-token:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git\" && git push origin \"${BRANCH}\"; fi"
+
+    post_build:
+      commands:
+        - "if [ \"${DRY_RUN}\" = \"true\" ]; then echo \"[DRY RUN] Skipping manifest update\"; exit 0; fi"
+        - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; if [ -z \"${JOB_LIST:-}\" ]; then echo \"No changes to manifest.\"; else python3 -c 'import json,os;p=\"/tmp/initialized-jobs.json\";cur=set(json.load(open(p)));cur|=set(os.environ.get(\"JOB_LIST\",\"\\n\").split());open(p,\"w\").write(json.dumps(sorted(cur)))'; aws s3 cp /tmp/initialized-jobs.json \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}\"; echo \"Manifest updated\"; fi"
+
+        # ---- Commit & push generated code back to GitHub (using PAT) ----
+        - "echo '--- Push generated files back to GitHub ---'"
+        - "git config --global safe.directory '*'"
+        - "git config --global user.name \"${GIT_AUTHOR_NAME:-codebuild-bot}\""
+        - "git config --global user.email \"${GIT_AUTHOR_EMAIL:-codebuild-bot@users.noreply.github.com}\""
+
+        # Resolve target branch
+        - "BRANCH=\"${CODEBUILD_WEBHOOK_HEAD_REF#refs/heads/}\"; if [ -z \"${BRANCH}\" ]; then if [ -n \"${CODEBUILD_SOURCE_VERSION:-}\" ] && echo \"${CODEBUILD_SOURCE_VERSION}\" | grep -q '^refs/heads/'; then BRANCH=\"${CODEBUILD_SOURCE_VERSION#refs/heads/}\"; elif [ -n \"${CODEBUILD_SOURCE_VERSION:-}\" ] && echo \"${CODEBUILD_SOURCE_VERSION}\" | grep -Eq '^[0-9a-f]{7,40}$'; then git fetch origin --prune >/dev/null 2>&1 || true; CANDIDATE=\"$(git branch -r --contains \"${CODEBUILD_SOURCE_VERSION}\" 2>/dev/null | sed -n 's|.*origin/||p' | head -n1)\"; BRANCH=\"${CANDIDATE}\"; fi; fi; BRANCH=\"${BRANCH:-${TARGET_BRANCH:-setup}}\"; echo \"Branch: ${BRANCH}\""
+
+        # Sync local branch
+        - "git fetch origin \"${BRANCH}:${BRANCH}\" || true && git checkout \"${BRANCH}\" || git checkout -B \"${BRANCH}\" && git pull --ff-only origin \"${BRANCH}\" || true && (git rev-parse --is-shallow-repository >/dev/null 2>&1 && git fetch --unshallow || true)"
+
+        # Stage & commit generated files
+        - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; CHANGED=0; for j in ${JOB_LIST}; do git add \"jobs/${j}\" 2>/dev/null && CHANGED=1; done; if [ \"$CHANGED\" -eq 0 ]; then echo 'Nothing new to commit'; exit 0; fi"
+        - "git commit -m \"chore(setup): initialize Glue jobs (${JOB_LIST}) [skip ci]\" || echo 'Nothing to commit'"
+
+        # Require token/username and set PAT-style remote URL
+        - "test -n \"${GITHUB_TOKEN:-}\" || { echo 'ERROR: GITHUB_TOKEN is not set'; exit 1; }"
+        - "GITHUB_USERNAME=\"${GITHUB_USERNAME:-codebuild-bot}\""
+        - "git remote set-url origin \"https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git\""
+
+        # Optional: quick auth check (kept quiet) then push
+        - "git ls-remote origin >/dev/null"
+        - "git push origin \"${BRANCH}\""
 
 artifacts:
   files:
