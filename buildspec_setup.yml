@@ -61,8 +61,9 @@ phases:
       - "git fetch origin \"${BRANCH}:${BRANCH}\" || true && git checkout \"${BRANCH}\" || git checkout -B \"${BRANCH}\" && git pull --ff-only origin \"${BRANCH}\" || true && (git rev-parse --is-shallow-repository >/dev/null 2>&1 && git fetch --unshallow || true)"
       - "CHANGED=0; for j in ${JOB_LIST}; do git add \"jobs/${j}\" 2>/dev/null && CHANGED=1; done; if [ \"$CHANGED\" -eq 0 ]; then echo '[PB] Nothing new to commit'; else git commit -m \"chore(setup): initialize Glue jobs (${JOB_LIST}) [skip ci]\"; fi"
       - "test -n \"${GITHUB_TOKEN:-}\" || { echo '[PB] ERROR: GITHUB_TOKEN not set'; exit 1; }"
-      - "GITHUB_USERNAME=\"${GITHUB_USERNAME:-Huzair13}\" && git remote set-url origin \"https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git\""
+      - "git remote set-url origin \"https://x-access-token:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git\""
       - "git push origin \"${BRANCH}\" && echo '[PB] push done'"
+
 
 
 artifacts:
