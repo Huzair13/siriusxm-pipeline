@@ -54,76 +54,15 @@ phases:
 
   post_build:
     commands:
-      - echo "[PB] start"
-      - if [ "${DRY_RUN}" = "true" ]; then echo "[PB] DRY RUN: skipping manifest & push"; exit 0; fi
-
-      # --- Update manifest in S3 (no scary quotes) ---
-      - |-
-        JOB_LIST="$(cat /tmp/job_list.txt 2>/dev/null || true)"
-        echo "[PB] JOB_LIST=${JOB_LIST:-<empty>}"
-        if [ -z "${JOB_LIST:-}" ]; then
-          echo "[PB] No changes to manifest."
-        else
-          python3 - <<'PY'
-          import json, os
-          p = "/tmp/initialized-jobs.json"
-          cur = set(json.load(open(p)))
-          cur |= set(os.environ.get("JOB_LIST", "\n").split())
-          open(p, "w").write(json.dumps(sorted(cur)))
-          PY
-          aws s3 cp /tmp/initialized-jobs.json "s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"
-          echo "[PB] Manifest updated"
-        fi
-
-      # --- Push generated files back to GitHub (PAT style) ---
-      - echo "[PB] push: begin"
-      - git config --global safe.directory '*'
-      - git config --global user.name "${GIT_AUTHOR_NAME:-codebuild-bot}"
-      - git config --global user.email "${GIT_AUTHOR_EMAIL:-codebuild-bot@users.noreply.github.com}"
-
-      # Resolve target branch
-      - |-
-        BRANCH="${CODEBUILD_WEBHOOK_HEAD_REF#refs/heads/}"
-        if [ -z "${BRANCH}" ]; then
-          if [ -n "${CODEBUILD_SOURCE_VERSION:-}" ] && echo "${CODEBUILD_SOURCE_VERSION}" | grep -q '^refs/heads/'; then
-            BRANCH="${CODEBUILD_SOURCE_VERSION#refs/heads/}"
-          elif [ -n "${CODEBUILD_SOURCE_VERSION:-}" ] && echo "${CODEBUILD_SOURCE_VERSION}" | grep -Eq '^[0-9a-f]{7,40}$'; then
-            git fetch origin --prune >/dev/null 2>&1 || true
-            CANDIDATE="$(git branch -r --contains "${CODEBUILD_SOURCE_VERSION}" 2>/dev/null | sed -n 's|.*origin/||p' | head -n1)"
-            BRANCH="${CANDIDATE}"
-          fi
-        fi
-        BRANCH="${BRANCH:-${TARGET_BRANCH:-setup}}"
-        echo "[PB] Branch=${BRANCH}"
-
-      # Sync local branch
-      - git fetch origin "${BRANCH}:${BRANCH}" || true
-      - git checkout "${BRANCH}" || git checkout -B "${BRANCH}"
-      - git pull --ff-only origin "${BRANCH}" || true
-      - git rev-parse --is-shallow-repository >/dev/null 2>&1 && git fetch --unshallow || true
-      - echo "[PB] status before add:"; git status --porcelain || true
-
-      # Stage & commit generated files
-      - |-
-        CHANGED=0
-        for j in ${JOB_LIST}; do
-          git add "jobs/${j}" 2>/dev/null && CHANGED=1
-        done
-        echo "[PB] CHANGED=${CHANGED}"
-        if [ "$CHANGED" -eq 0 ]; then
-          echo "[PB] Nothing new to commit"
-          exit 0
-        fi
-        git commit -m "chore(setup): initialize Glue jobs (${JOB_LIST}) [skip ci]" || echo "[PB] Nothing to commit"
-
-      # Require token/username and set PAT-style remote URL
-      - test -n "${GITHUB_TOKEN:-}" || { echo "[PB] ERROR: GITHUB_TOKEN not set"; exit 1; }
-      - GITHUB_USERNAME="${GITHUB_USERNAME:-Huzair13}"
-      - git remote set-url origin "https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git"
-      - git ls-remote origin >/dev/null && echo "[PB] auth ok"
-
-      # Push
-      - echo "[PB] pushing..."; git push origin "${BRANCH}" && echo "[PB] push done"
+      - "if [ \"${DRY_RUN}\" = \"true\" ]; then echo '[PB] DRY RUN: skipping manifest & push'; exit 0; fi"
+      - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; if [ -z \"${JOB_LIST}\" ]; then echo '[PB] No changes to manifest'; else python3 -c 'import json,os;p=\"/tmp/initialized-jobs.json\";cur=set(json.load(open(p)));cur|=set(os.environ.get(\"JOB_LIST\",\"\").split());open(p,\"w\").write(json.dumps(sorted(cur)))'; aws s3 cp /tmp/initialized-jobs.json \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}\"; echo '[PB] Manifest updated'; fi"
+      - "git config --global safe.directory '*' && git config --global user.name \"${GIT_AUTHOR_NAME:-codebuild-bot}\" && git config --global user.email \"${GIT_AUTHOR_EMAIL:-codebuild-bot@users.noreply.github.com}\""
+      - "BRANCH=\"${CODEBUILD_WEBHOOK_HEAD_REF#refs/heads/}\"; if [ -z \"${BRANCH}\" ]; then if [ -n \"${CODEBUILD_SOURCE_VERSION:-}\" ] && echo \"${CODEBUILD_SOURCE_VERSION}\" | grep -q '^refs/heads/'; then BRANCH=\"${CODEBUILD_SOURCE_VERSION#refs/heads/}\"; elif [ -n \"${CODEBUILD_SOURCE_VERSION:-}\" ] && echo \"${CODEBUILD_SOURCE_VERSION}\" | grep -Eq '^[0-9a-f]{7,40}$'; then git fetch origin --prune >/dev/null 2>&1 || true; CANDIDATE=\"$(git branch -r --contains \"${CODEBUILD_SOURCE_VERSION}\" 2>/dev/null | sed -n 's|.*origin/||p' | head -n1)\"; BRANCH=\"${CANDIDATE}\"; fi; fi; BRANCH=\"${BRANCH:-${TARGET_BRANCH:-setup}}\"; echo \"[PB] Branch=${BRANCH}\""
+      - "git fetch origin \"${BRANCH}:${BRANCH}\" || true && git checkout \"${BRANCH}\" || git checkout -B \"${BRANCH}\" && git pull --ff-only origin \"${BRANCH}\" || true && (git rev-parse --is-shallow-repository >/dev/null 2>&1 && git fetch --unshallow || true)"
+      - "CHANGED=0; for j in ${JOB_LIST}; do git add \"jobs/${j}\" 2>/dev/null && CHANGED=1; done; if [ \"$CHANGED\" -eq 0 ]; then echo '[PB] Nothing new to commit'; else git commit -m \"chore(setup): initialize Glue jobs (${JOB_LIST}) [skip ci]\"; fi"
+      - "test -n \"${GITHUB_TOKEN:-}\" || { echo '[PB] ERROR: GITHUB_TOKEN not set'; exit 1; }"
+      - "GITHUB_USERNAME=\"${GITHUB_USERNAME:-Huzair13}\" && git remote set-url origin \"https://${GITHUB_USERNAME}:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git\""
+      - "git push origin \"${BRANCH}\" && echo '[PB] push done'"
 
 
 artifacts:
