@@ -52,17 +52,66 @@ phases:
   #     # - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; CHANGED=0; for j in ${JOB_LIST}; do git add \"jobs/${j}\" 2>/dev/null && CHANGED=1; done; if [ \"$CHANGED\" -eq 0 ]; then echo 'Nothing new to commit'; else git commit -m \"chore(setup): initialize Glue jobs (${JOB_LIST}) [skip ci]\" && git remote set-url origin \"https://x-access-token:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git\" && git push origin \"${BRANCH}\"; fi"
 
 
-  post_build:
-    commands:
-      - "if [ \"${DRY_RUN}\" = \"true\" ]; then echo '[PB] DRY RUN: skipping manifest & push'; exit 0; fi"
-      - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; if [ -z \"${JOB_LIST}\" ]; then echo '[PB] No changes to manifest'; else python3 -c 'import json,os;p=\"/tmp/initialized-jobs.json\";cur=set(json.load(open(p))) if os.path.exists(p) else set();cur|=set(os.environ.get(\"JOB_LIST\",\"\").split());open(p,\"w\").write(json.dumps(sorted(cur)))'; aws s3 cp /tmp/initialized-jobs.json \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}\"; echo '[PB] Manifest updated'; fi"
-      - "git config --global safe.directory '*' && git config --global user.name \"${GIT_AUTHOR_NAME:-codebuild-bot}\" && git config --global user.email \"${GIT_AUTHOR_EMAIL:-codebuild-bot@users.noreply.github.com}\""
-      - "BRANCH=\"${CODEBUILD_WEBHOOK_HEAD_REF#refs/heads/}\"; if [ -z \"${BRANCH}\" ] && [ -n \"${CODEBUILD_SOURCE_VERSION:-}\" ]; then case \"${CODEBUILD_SOURCE_VERSION}\" in refs/heads/*) BRANCH=\"${CODEBUILD_SOURCE_VERSION#refs/heads/}\" ;; esac; fi; BRANCH=\"${BRANCH:-${TARGET_BRANCH:-setup}}\"; echo \"[PB] Branch=${BRANCH}\""
-      - "git fetch origin || true; git checkout \"${BRANCH}\" 2>/dev/null || git checkout -b \"${BRANCH}\" --track \"origin/${BRANCH}\"; git pull --ff-only origin \"${BRANCH}\" || true"
-      - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; CHANGED=0; for j in ${JOB_LIST}; do if [ -n \"$(git status --porcelain \"jobs/${j}\")\" ]; then git add -A \"jobs/${j}\"; CHANGED=1; fi; done; if [ \"${CHANGED}\" -eq 1 ]; then CM=\"${COMMIT_MESSAGE:-${COMMIT_PREFIX:-chore(setup)}: ${COMMIT_TITLE:-initialize Glue jobs} (${JOB_LIST})${COMMIT_TRAILER:-}\"; git commit -m \"${CM}\"; else echo \"[PB] No file changes to commit for: ${JOB_LIST:-<empty>}\"; fi"
-      - "[ -n \"${GITHUB_TOKEN}\" ] || { echo '[PB] ERROR: GITHUB_TOKEN empty'; exit 1; }"
-      - "git remote set-url origin \"https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_USERNAME:-Huzair13}/siriusxm-pipeline.git\"; git push origin \"${BRANCH}\" && echo '[PB] push done'"
+post_build:
+  commands:
+    - |
+      if [ "${DRY_RUN}" = "true" ]; then 
+        echo "[PB] DRY RUN: skipping manifest & push"
+        exit 0
+      fi
 
+    # Update manifest
+    - |
+      JOB_LIST="$(cat /tmp/job_list.txt 2>/dev/null || true)"
+      if [ -z "${JOB_LIST}" ]; then
+        echo "[PB] No changes to manifest"
+      else
+        python3 -c 'import json,os;p="/tmp/initialized-jobs.json";cur=set(json.load(open(p)));cur|=set(os.environ.get("JOB_LIST","").split());open(p,"w").write(json.dumps(sorted(cur)))'
+        aws s3 cp /tmp/initialized-jobs.json "s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"
+        echo "[PB] Manifest updated"
+      fi
+
+    # Git setup
+    - git config --global safe.directory '*'
+    - git config --global user.name "${GIT_AUTHOR_NAME:-codebuild-bot}"
+    - git config --global user.email "${GIT_AUTHOR_EMAIL:-codebuild-bot@users.noreply.github.com}"
+
+    # Resolve branch
+    - |
+      BRANCH="${CODEBUILD_WEBHOOK_HEAD_REF#refs/heads/}"
+      if [ -z "$BRANCH" ]; then
+        if [[ "${CODEBUILD_SOURCE_VERSION:-}" =~ ^refs/heads/ ]]; then
+          BRANCH="${CODEBUILD_SOURCE_VERSION#refs/heads/}"
+        elif [[ "${CODEBUILD_SOURCE_VERSION:-}" =~ ^[0-9a-f]{7,40}$ ]]; then
+          git fetch origin --prune >/dev/null 2>&1 || true
+          BRANCH="$(git branch -r --contains "${CODEBUILD_SOURCE_VERSION}" 2>/dev/null | sed -n 's|.*origin/||p' | head -n1)"
+        fi
+      fi
+      BRANCH="${BRANCH:-${TARGET_BRANCH:-setup}}"
+      echo "[PB] Branch=$BRANCH"
+
+    - git fetch origin "${BRANCH}:${BRANCH}" || true
+    - git checkout "${BRANCH}" || git checkout -B "${BRANCH}"
+    - git pull --ff-only origin "${BRANCH}" || true
+
+    # Commit only if files changed
+    - |
+      JOB_LIST="$(cat /tmp/job_list.txt 2>/dev/null || true)"
+      if [ -n "$JOB_LIST" ] && [ -n "$(git status --porcelain jobs/)" ]; then
+        git add "jobs/${JOB_LIST}"
+        git commit -m "chore(glue): initialized jobs ${JOB_LIST} [skip ci]"
+      else
+        echo "[PB] Nothing to commit for jobs: ${JOB_LIST:-<none>}"
+      fi
+
+    # Push
+    - |
+      if [ -z "${GITHUB_TOKEN}" ]; then
+        echo "[PB] ERROR: GITHUB_TOKEN empty" >&2
+        exit 1
+      fi
+      git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git"
+      git push origin "${BRANCH}" && echo "[PB] push done"
 
 artifacts:
   files:
