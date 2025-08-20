@@ -78,7 +78,7 @@ env:
   variables:
     TF_PLUGIN_CACHE_DIR: "/root/.terraform.d/plugin-cache"
     TF_IN_AUTOMATION: "1"
-    # REQUIRED in CodeBuild env:
+    # REQUIRED in CodeBuild:
     #   ARTIFACT_BUCKET=siriusxm-pipeline-artifacts
     # OPTIONAL at runtime:
     #   COMMIT_TO_APPLY=<commit-sha>
@@ -95,67 +95,43 @@ phases:
 
   pre_build:
     commands:
+      - set -euo pipefail
+      - ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET}
       - |
-        set -euo pipefail
-        ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET}
-
-        # Decide commit to apply
         if [ -n "${COMMIT_TO_APPLY:-}" ]; then
           COMMIT="$COMMIT_TO_APPLY"
         else
           COMMIT="$(aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/latest.txt" - 2>/dev/null || true)"
         fi
 
+      - |
         if [ -z "${COMMIT}" ]; then
-          echo "No COMMIT provided and latest.txt missing — will skip apply."
+          echo "No COMMIT provided and latest.txt missing — skipping apply."
           SKIP_APPLY=1
         else
           echo "Fetching artifacts for commit: ${COMMIT}"
-          # Pull the entire run so configs + plans are present
           aws s3 sync "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/" .
         fi
 
-      # Determine plan dirs from manifest (preferred) or by discovering tfplan files
       - |
         if [ -z "${SKIP_APPLY:-}" ]; then
           if [ -f plan_dirs.txt ]; then
-            echo "Using plan_dirs.txt"
             PLAN_DIRS="$(sed '/^$/d' plan_dirs.txt | sort -u)"
           else
-            echo "Discovering plan directories via tfplan files"
             PLAN_DIRS=$(find jobs sp_jobs -type f -name tfplan 2>/dev/null | xargs -r -n1 dirname | sort -u)
           fi
         fi
         echo "PLAN_DIRS: ${PLAN_DIRS:-<none>}"
 
-      # Validate each plan dir has required files
       - |
         if [ -z "${SKIP_APPLY:-}" ] && [ -n "${PLAN_DIRS:-}" ]; then
           MISSING=0
           for dir in ${PLAN_DIRS}; do
             [ -f "${dir}/terraform.tfbackend" ] || { echo "ERROR: ${dir} missing terraform.tfbackend"; MISSING=1; }
-            ls "${dir}"/*.tf >/dev/null 2>&1   || { echo "ERROR: ${dir} has no *.tf files"; MISSING=1; }
             [ -f "${dir}/.terraform.lock.hcl" ] || { echo "ERROR: ${dir} missing .terraform.lock.hcl"; MISSING=1; }
+            ls "${dir}"/*.tf >/dev/null 2>&1 || { echo "ERROR: ${dir} has no *.tf files"; MISSING=1; }
           done
-          if [ "${MISSING}" -ne 0 ]; then
-            echo "One or more plan directories are missing required files; aborting."
-            exit 1
-          fi
-        fi
-
-      # Optional: enforce Glue artifacts presence when those markers exist
-      - |
-        if [ -z "${SKIP_APPLY:-}" ] && [ -n "${PLAN_DIRS:-}" ]; then
-          for dir in ${PLAN_DIRS}; do
-            case "${dir}" in
-              jobs/*)
-                if [ -f "${dir}/requirements.txt" ] || ls "${dir}"/utils-*.whl >/dev/null 2>&1; then
-                  [ -f "${dir}/requirements.txt" ] || { echo "ERROR: ${dir} missing requirements.txt"; exit 1; }
-                  ls "${dir}"/utils-*.whl >/dev/null 2>&1 || { echo "ERROR: ${dir} missing utils-*.whl"; exit 1; }
-                fi
-                ;;
-            esac
-          done
+          [ "${MISSING}" -ne 0 ] && { echo "Validation failed"; exit 1; }
         fi
 
   build:
@@ -166,18 +142,14 @@ phases:
           echo "Skipping apply — no commit to apply."
           exit 0
         fi
-
         if [ -z "${PLAN_DIRS:-}" ]; then
           echo "No tfplan found. Nothing to apply."
           exit 0
         fi
-
         APPLY_EXIT=0
         : > apply_status.txt
-
         for dir in ${PLAN_DIRS}; do
           echo "=== Applying ${dir} ==="
-          # Use the exact provider selections from lockfile
           terraform -chdir="${dir}" init -input=false -backend-config=terraform.tfbackend -lockfile=readonly
           if terraform -chdir="${dir}" apply -input=false -no-color tfplan; then
             echo "OK  ${dir}" | tee -a apply_status.txt
@@ -186,7 +158,6 @@ phases:
             APPLY_EXIT=1
           fi
         done
-
         exit ${APPLY_EXIT}
 
 artifacts:
