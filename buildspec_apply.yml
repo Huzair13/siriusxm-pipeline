@@ -99,44 +99,37 @@ phases:
       - |
         set -euo pipefail
         ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET}
-
-        # Figure out which plan commit to apply
+        # Which plan commit to apply?
         if [ -n "${COMMIT_TO_APPLY:-}" ]; then
           COMMIT="$COMMIT_TO_APPLY"
         else
           COMMIT="$(aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/latest.txt" - 2>/dev/null || true)"
         fi
-
         if [ -z "${COMMIT}" ]; then
           echo "No COMMIT provided and latest.txt missing — skipping apply."
           SKIP_APPLY=1
         else
-          echo "Plan commit to apply: ${COMMIT}"
+          echo "Plan commit: ${COMMIT}"
         fi
 
       - |
-        # Ensure the working tree matches the plan commit (use GitHub source)
+        # Ensure repo matches the plan commit
         if [ -z "${SKIP_APPLY:-}" ]; then
           SRC_COMMIT="${CODEBUILD_RESOLVED_SOURCE_VERSION:-unknown}"
           if [ "${SRC_COMMIT}" != "${COMMIT}" ]; then
-            echo "Checking out repo to plan commit ${COMMIT} (was ${SRC_COMMIT})"
+            echo "Checking out repo to ${COMMIT}"
             git fetch --all --depth=1 || true
             git checkout -f "${COMMIT}"
           else
-            echo "Repo is already at plan commit ${COMMIT}"
+            echo "Repo already at ${COMMIT}"
           fi
         fi
 
       - |
-        # Pull ONLY the necessary artifacts from S3 and overlay onto the repo:
-        # - tfplan (+ txt/json for audit)
-        # - .terraform.lock.hcl (provider set from plan)
-        # - requirements.txt / utils-*.whl (Glue assets)
+        # Overlay only the artifacts (no TF code from S3)
         if [ -z "${SKIP_APPLY:-}" ]; then
-          echo "Fetching minimal artifacts for commit ${COMMIT}"
-          # plan_dirs.txt helps us know exactly what to apply; OK if missing
+          echo "Fetching plan artifacts for ${COMMIT}"
           aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/plan_dirs.txt" plan_dirs.txt 2>/dev/null || true
-
           aws s3 sync "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/" . \
             --exclude "*" \
             --include "jobs/*/tfplan" \
@@ -152,7 +145,7 @@ phases:
         fi
 
       - |
-        # Work out which directories to apply
+        # Determine which dirs to apply
         if [ -z "${SKIP_APPLY:-}" ]; then
           if [ -f plan_dirs.txt ]; then
             echo "Using plan_dirs.txt"
@@ -162,10 +155,10 @@ phases:
             PLAN_DIRS=$(find jobs sp_jobs -type f -name tfplan 2>/dev/null | xargs -r -n1 dirname | sort -u)
           fi
         fi
-        echo "PLAN_DIRS (raw): ${PLAN_DIRS:-<none>}"
+        echo "PLAN_DIRS (raw): ${PLAN_DIRS:-<none>}";
 
       - |
-        # Validate: repo provides *.tf and backend; artifacts provided the lock + plan
+        # Validate: repo provides TF & backend; artifacts provided lock & plan
         if [ -z "${SKIP_APPLY:-}" ] && [ -n "${PLAN_DIRS:-}" ]; then
           VALID_DIRS=""
           for dir in ${PLAN_DIRS}; do
@@ -211,7 +204,6 @@ phases:
 
         echo "==== Apply Summary ===="
         cat apply_status.txt || true
-
         exit ${APPLY_EXIT}
 
 artifacts:
