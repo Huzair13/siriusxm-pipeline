@@ -5,8 +5,6 @@ Main AWS Glue Python Shell job script for Job_EDW_ST_CNSMPTN_CMN_DIM_US_STG_TO_S
 This script serves as the entry point for the AWS Glue Python Shell job.
 It handles parameter parsing, validation, logging setup, and exception handling.
 """
-
-#edited
 import sys
 import os
 import uuid
