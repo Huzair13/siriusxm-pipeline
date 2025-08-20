@@ -1,6 +1,6 @@
-# terraform {
-#   backend "s3" {}
-# }
+terraform {
+  backend "s3" {}
+}
 
 # locals {
 #   job_config = jsondecode(file("${path.module}/config.json"))
@@ -10,21 +10,21 @@
 #   }
 # }
 
-# provider "aws" {
-#   region = var.aws_region
-# }
+provider "aws" {
+  region = var.aws_region
+}
 
 
-# terraform {
-#   required_version = ">= 1.5.0, < 2.0.0"
+terraform {
+  required_version = ">= 1.5.0, < 2.0.0"
 
-#   required_providers {
-#     aws = {
-#       source  = "hashicorp/aws"
-#       version = "~> 5.0" 
-#     }
-#   }
-# }
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0" 
+    }
+  }
+}
 
 # data "aws_caller_identity" "current" {}
 # data "aws_region" "current" {}
