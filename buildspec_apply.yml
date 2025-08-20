@@ -1,10 +1,86 @@
+# version: 0.2
+
+# env:
+#   variables:
+#     TF_PLUGIN_CACHE_DIR: /root/.terraform.d/plugin-cache
+#     # Set ARTIFACT_BUCKET in the CodeBuild project / pipeline env
+#     # Optionally pass COMMIT_TO_APPLY at build start to apply a specific commit
+
+# phases:
+#   install:
+#     commands:
+#       - yum update -y && yum install -y unzip
+#       - curl -sSLO https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
+#       - unzip -o terraform_1.5.7_linux_amd64.zip && mv terraform /usr/local/bin/
+#       - mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+#       - terraform version
+
+#   pre_build:
+#     commands:
+#       - |
+#         set -e
+#         ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET env var}
+#         if [ -n "${COMMIT_TO_APPLY:-}" ]; then
+#           COMMIT="$COMMIT_TO_APPLY"
+#         else
+#           COMMIT=$(aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/latest.txt" - || true)
+#         fi
+#         if [ -z "$COMMIT" ]; then
+#           echo "No COMMIT provided and latest.txt missing. Nothing to apply."; exit 0
+#         fi
+#         echo "Fetching artifacts for commit: $COMMIT"
+#         aws s3 sync "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/jobs/" jobs/
+#         echo "Fetched tree (first 200 lines):" && ls -R jobs | sed -n '1,200p'
+#       - |
+#         echo "Discovering jobs with saved plans"
+#         CHANGED_JOBS=$(find jobs -maxdepth 2 -type f -name tfplan -printf '%h\n' 2>/dev/null | awk -F'/' '{print $2}' | sort -u)
+#         echo "Jobs to apply: ${CHANGED_JOBS:-<none>}"
+#       - |
+#         for job in $CHANGED_JOBS; do
+#           [ -d "jobs/$job" ] || continue
+#           [ -f "jobs/$job/utils-0.1-py3-none-any.whl" ] || { echo "Missing wheel for $job"; exit 1; }
+#           [ -f "jobs/$job/requirements.txt" ] || { echo "Missing requirements.txt for $job"; exit 1; }
+#         done
+
+#   build:
+#     commands:
+#       - |
+#         set -e
+#         [ -z "$CHANGED_JOBS" ] && echo "No tfplan found. Nothing to apply." && exit 0
+#         APPLY_EXIT=0
+#         for job in $CHANGED_JOBS; do
+#           [ -d "jobs/$job" ] || continue
+#           echo "=== Applying $job ==="
+#           terraform -chdir="jobs/$job" init -input=false -backend-config=terraform.tfbackend
+#           if terraform -chdir="jobs/$job" apply -input=false -no-color tfplan; then
+#             echo "Apply OK: $job"
+#           else
+#             echo "Apply FAILED: $job"
+#             APPLY_EXIT=1
+#           fi
+#         done
+#         exit $APPLY_EXIT
+
+# artifacts:
+#   files:
+#     - jobs/**/tfplan.txt
+#     - jobs/**/tfplan.json
+#   discard-paths: no
+
+# cache:
+#   paths:
+#     - /root/.terraform.d/plugin-cache/**
+
+
 version: 0.2
 
 env:
   variables:
-    TF_PLUGIN_CACHE_DIR: /root/.terraform.d/plugin-cache
-    # Set ARTIFACT_BUCKET in the CodeBuild project / pipeline env
-    # Optionally pass COMMIT_TO_APPLY at build start to apply a specific commit
+    TF_PLUGIN_CACHE_DIR: "/root/.terraform.d/plugin-cache"
+    # REQUIRED: set in CodeBuild env
+    # ARTIFACT_BUCKET: siriusxm-pipeline-artifacts
+    # OPTIONAL: override the commit to apply
+    # COMMIT_TO_APPLY: <commit-sha>
 
 phases:
   install:
@@ -19,52 +95,90 @@ phases:
     commands:
       - |
         set -e
-        ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET env var}
+        ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET}
+        # Decide which commit to apply: explicit override or latest.txt
         if [ -n "${COMMIT_TO_APPLY:-}" ]; then
           COMMIT="$COMMIT_TO_APPLY"
         else
-          COMMIT=$(aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/latest.txt" - || true)
+          COMMIT="$(aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/latest.txt" - 2>/dev/null || true)"
         fi
+
         if [ -z "$COMMIT" ]; then
-          echo "No COMMIT provided and latest.txt missing. Nothing to apply."; exit 0
+          echo "No COMMIT provided and latest.txt missing — skipping apply."
+          SKIP_APPLY=1
+        else
+          echo "Fetching artifacts for commit: $COMMIT"
+          # Pull the entire run tree so both jobs/ and sp_jobs/ are available
+          aws s3 sync "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/" .
         fi
-        echo "Fetching artifacts for commit: $COMMIT"
-        aws s3 sync "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/jobs/" jobs/
-        echo "Fetched tree (first 200 lines):" && ls -R jobs | sed -n '1,200p'
+
+      # Discover plan directories (both jobs/ and sp_jobs/)
       - |
-        echo "Discovering jobs with saved plans"
-        CHANGED_JOBS=$(find jobs -maxdepth 2 -type f -name tfplan -printf '%h\n' 2>/dev/null | awk -F'/' '{print $2}' | sort -u)
-        echo "Jobs to apply: ${CHANGED_JOBS:-<none>}"
+        if [ -z "${SKIP_APPLY:-}" ]; then
+          PLAN_DIRS=$(find jobs sp_jobs -type f -name tfplan 2>/dev/null | xargs -r -n1 dirname | sort -u)
+        fi
+        echo "PLAN_DIRS: ${PLAN_DIRS:-<none>}"
+
+      # Identify Glue jobs (under jobs/) and validate their wheel + requirements
       - |
-        for job in $CHANGED_JOBS; do
-          [ -d "jobs/$job" ] || continue
-          [ -f "jobs/$job/utils-0.1-py3-none-any.whl" ] || { echo "Missing wheel for $job"; exit 1; }
-          [ -f "jobs/$job/requirements.txt" ] || { echo "Missing requirements.txt for $job"; exit 1; }
-        done
+        if [ -z "${SKIP_APPLY:-}" ]; then
+          GLUE_DIRS=""
+          for d in $PLAN_DIRS; do
+            case "$d" in
+              jobs/*)
+                # Treat as Glue job if wheel/reqs exist alongside the plan
+                if ls "$d"/utils-*.whl >/dev/null 2>&1 && [ -f "$d/requirements.txt" ]; then
+                  GLUE_DIRS="$GLUE_DIRS $d"
+                fi
+                ;;
+            esac
+          done
+          GLUE_DIRS="$(echo "$GLUE_DIRS" | xargs -n1 | sort -u | xargs || true)"
+          echo "GLUE_DIRS (validated for wheel/requirements): ${GLUE_DIRS:-<none>}"
+
+          # Enforce presence of artifacts for Glue jobs only
+          for gd in $GLUE_DIRS; do
+            [ -f "$gd/requirements.txt" ] || { echo "Missing requirements.txt in $gd"; exit 1; }
+            ls "$gd"/utils-*.whl >/dev/null 2>&1 || { echo "Missing utils-*.whl in $gd"; exit 1; }
+          done
+        fi
 
   build:
     commands:
       - |
-        set -e
-        [ -z "$CHANGED_JOBS" ] && echo "No tfplan found. Nothing to apply." && exit 0
-        APPLY_EXIT=0
-        for job in $CHANGED_JOBS; do
-          [ -d "jobs/$job" ] || continue
-          echo "=== Applying $job ==="
-          terraform -chdir="jobs/$job" init -input=false -backend-config=terraform.tfbackend
-          if terraform -chdir="jobs/$job" apply -input=false -no-color tfplan; then
-            echo "Apply OK: $job"
-          else
-            echo "Apply FAILED: $job"
-            APPLY_EXIT=1
-          fi
-        done
-        exit $APPLY_EXIT
+        if [ -n "${SKIP_APPLY:-}" ]; then
+          echo "Skipping apply — no commit to apply."
+        elif [ -z "${PLAN_DIRS:-}" ]; then
+          echo "No tfplan found. Nothing to apply."
+        else
+          set +e
+          APPLY_EXIT=0
+          for dir in $PLAN_DIRS; do
+            echo "=== Applying $dir ==="
+            terraform -chdir="$dir" init -input=false -backend-config=terraform.tfbackend
+            if terraform -chdir="$dir" apply -input=false -no-color tfplan; then
+              echo "Apply OK: $dir"
+            else
+              echo "Apply FAILED: $dir"
+              APPLY_EXIT=1
+            fi
+          done
+          exit $APPLY_EXIT
+        fi
+
+  post_build:
+    commands:
+      - |
+        echo "apply status: commit=${COMMIT:-none}, skip=${SKIP_APPLY:-0}, plans=${PLAN_DIRS:-none}, time=$(date -u +%FT%TZ)" > apply_status.txt
 
 artifacts:
   files:
+    - apply_status.txt
+    # Keep plan renders handy for auditing
     - jobs/**/tfplan.txt
     - jobs/**/tfplan.json
+    - sp_jobs/**/tfplan.txt
+    - sp_jobs/**/tfplan.json
   discard-paths: no
 
 cache:
