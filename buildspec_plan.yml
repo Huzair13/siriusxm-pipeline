@@ -97,9 +97,6 @@
 #     - /root/.terraform.d/plugin-cache/**
 
 
-
-
-
 version: 0.2
 
 env:
