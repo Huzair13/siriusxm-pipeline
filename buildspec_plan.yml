@@ -107,19 +107,22 @@ env:
 phases:
   install:
     commands:
-      - set -euo pipefail
-      - yum install -y unzip >/dev/null || (yum update -y && yum install -y unzip)
-      - curl -sSLO https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
-      - unzip -o terraform_1.5.7_linux_amd64.zip && mv terraform /usr/local/bin/
-      - mkdir -p "${TF_PLUGIN_CACHE_DIR}"
-      - terraform version
+      - |
+        set -euo pipefail
+        yum install -y unzip >/dev/null || (yum update -y && yum install -y unzip)
+        curl -sSLO https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
+        unzip -o terraform_1.5.7_linux_amd64.zip && mv terraform /usr/local/bin/
+        mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+        terraform version
 
   pre_build:
     commands:
-      - set -euo pipefail
-      - APPLY_DIRS="$(find jobs sp_jobs -type f -name '*.tf' 2>/dev/null | xargs -r -n1 dirname | sort -u)"
-      - echo "APPLY_DIRS: ${APPLY_DIRS:-<none>}"
-      - printf '' > plan_dirs.txt
+      - |
+        set -euo pipefail
+        # collect unique Terraform dirs under jobs/ and sp_jobs/
+        APPLY_DIRS="$(find jobs sp_jobs -type f -name '*.tf' 2>/dev/null | xargs -r -n1 dirname | sort -u)"
+        echo "APPLY_DIRS: ${APPLY_DIRS:-<none>}"
+        : > plan_dirs.txt
 
   build:
     commands:
@@ -130,9 +133,9 @@ phases:
           terraform -chdir="${dir}" fmt -recursive
           terraform -chdir="${dir}" init -input=false -backend-config=terraform.tfbackend
           terraform -chdir="${dir}" validate -no-color
-          terraform -chdir="${dir}" plan -input=false -no-color -out=tfplan || exit $?
-          terraform -chdir="${dir}" show -json tfplan > "${dir}/tfplan.json" || true
-          terraform -chdir="${dir}" show tfplan > "${dir}/tfplan.txt" || true
+          terraform -chdir="${dir}" plan -input=false -no-color -out=tfplan
+          terraform -chdir="${dir}" show -json tfplan > tfplan.json || true
+          terraform -chdir="${dir}" show tfplan > tfplan.txt || true
           [ -f "${dir}/.terraform.lock.hcl" ] || { echo "Missing .terraform.lock.hcl in ${dir}"; exit 1; }
           echo "${dir}" >> plan_dirs.txt
         done
@@ -145,7 +148,8 @@ phases:
         COMMIT=${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual-$(date +%s)}
 
         echo "Uploading plan artifacts to s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/"
-        # Upload jobs/
+
+        # Upload jobs/ (plans + config + lock + glue bits)
         aws s3 sync jobs/ "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/jobs/" \
           --exclude "*" \
           --include "*/tfplan" \
@@ -157,7 +161,7 @@ phases:
           --include "*/requirements.txt" \
           --include "*/utils-*.whl"
 
-        # Upload sp_jobs/
+        # Upload sp_jobs/ (plans + config + lock)
         aws s3 sync sp_jobs/ "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/sp_jobs/" \
           --exclude "*" \
           --include "*/tfplan" \
@@ -167,11 +171,11 @@ phases:
           --include "*/.terraform.lock.hcl" \
           --include "*/*.tf"
 
-        # Upload manifest + marker
+        # Manifest + latest marker
         aws s3 cp plan_dirs.txt "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/plan_dirs.txt"
         printf %s "$COMMIT" | aws s3 cp - "s3://${ARTIFACT_BUCKET}/runs/latest.txt" --content-type text/plain --cache-control no-store
         echo "Uploaded artifacts for commit ${COMMIT}"
-
+        
 artifacts:
   files:
     - plan_dirs.txt
@@ -194,3 +198,4 @@ artifacts:
 cache:
   paths:
     - /root/.terraform.d/plugin-cache/**
+
