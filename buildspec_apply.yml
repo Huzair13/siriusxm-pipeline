@@ -78,9 +78,9 @@ env:
   variables:
     TF_PLUGIN_CACHE_DIR: "/root/.terraform.d/plugin-cache"
     TF_IN_AUTOMATION: "1"
-    # REQUIRED in project/pipeline env:
+    # REQUIRED in CodeBuild env:
     #   ARTIFACT_BUCKET=siriusxm-pipeline-artifacts
-    # OPTIONAL override at runtime:
+    # OPTIONAL at runtime:
     #   COMMIT_TO_APPLY=<commit-sha>
 
 phases:
@@ -98,7 +98,8 @@ phases:
       - |
         set -euo pipefail
         ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET}
-        # Decide which commit to apply
+
+        # Decide commit to apply
         if [ -n "${COMMIT_TO_APPLY:-}" ]; then
           COMMIT="$COMMIT_TO_APPLY"
         else
@@ -110,24 +111,30 @@ phases:
           SKIP_APPLY=1
         else
           echo "Fetching artifacts for commit: ${COMMIT}"
-          # Pull the whole run so configs + plans for both trees are present
+          # Pull the entire run so configs + plans are present
           aws s3 sync "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/" .
         fi
 
-      # Discover plan directories in jobs/ and sp_jobs/
+      # Determine plan dirs from manifest (preferred) or by discovering tfplan files
       - |
         if [ -z "${SKIP_APPLY:-}" ]; then
-          PLAN_DIRS=$(find jobs sp_jobs -type f -name tfplan 2>/dev/null | xargs -r -n1 dirname | sort -u)
+          if [ -f plan_dirs.txt ]; then
+            echo "Using plan_dirs.txt"
+            PLAN_DIRS="$(sed '/^$/d' plan_dirs.txt | sort -u)"
+          else
+            echo "Discovering plan directories via tfplan files"
+            PLAN_DIRS=$(find jobs sp_jobs -type f -name tfplan 2>/dev/null | xargs -r -n1 dirname | sort -u)
+          fi
         fi
         echo "PLAN_DIRS: ${PLAN_DIRS:-<none>}"
 
-      # Validate each plan dir has config & lock & backend files (or fail early)
+      # Validate each plan dir has required files
       - |
         if [ -z "${SKIP_APPLY:-}" ] && [ -n "${PLAN_DIRS:-}" ]; then
           MISSING=0
           for dir in ${PLAN_DIRS}; do
             [ -f "${dir}/terraform.tfbackend" ] || { echo "ERROR: ${dir} missing terraform.tfbackend"; MISSING=1; }
-            ls "${dir}"/*.tf >/dev/null 2>&1 || { echo "ERROR: ${dir} has no *.tf files"; MISSING=1; }
+            ls "${dir}"/*.tf >/dev/null 2>&1   || { echo "ERROR: ${dir} has no *.tf files"; MISSING=1; }
             [ -f "${dir}/.terraform.lock.hcl" ] || { echo "ERROR: ${dir} missing .terraform.lock.hcl"; MISSING=1; }
           done
           if [ "${MISSING}" -ne 0 ]; then
@@ -136,13 +143,12 @@ phases:
           fi
         fi
 
-      # (Optional) Validate Glue artifacts only for Glue job dirs
+      # Optional: enforce Glue artifacts presence when those markers exist
       - |
         if [ -z "${SKIP_APPLY:-}" ] && [ -n "${PLAN_DIRS:-}" ]; then
           for dir in ${PLAN_DIRS}; do
             case "${dir}" in
               jobs/*)
-                # Enforce presence of Glue artifacts when present for job dirs
                 if [ -f "${dir}/requirements.txt" ] || ls "${dir}"/utils-*.whl >/dev/null 2>&1; then
                   [ -f "${dir}/requirements.txt" ] || { echo "ERROR: ${dir} missing requirements.txt"; exit 1; }
                   ls "${dir}"/utils-*.whl >/dev/null 2>&1 || { echo "ERROR: ${dir} missing utils-*.whl"; exit 1; }
@@ -171,7 +177,7 @@ phases:
 
         for dir in ${PLAN_DIRS}; do
           echo "=== Applying ${dir} ==="
-          # Ensure module/plugins are wired exactly as plan expects
+          # Use the exact provider selections from lockfile
           terraform -chdir="${dir}" init -input=false -backend-config=terraform.tfbackend -lockfile=readonly
           if terraform -chdir="${dir}" apply -input=false -no-color tfplan; then
             echo "OK  ${dir}" | tee -a apply_status.txt
@@ -186,6 +192,7 @@ phases:
 artifacts:
   files:
     - apply_status.txt
+    - plan_dirs.txt
     - jobs/**/tfplan.txt
     - jobs/**/tfplan.json
     - sp_jobs/**/tfplan.txt

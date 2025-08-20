@@ -105,137 +105,126 @@ version: 0.2
 env:
   variables:
     TF_PLUGIN_CACHE_DIR: "/root/.terraform.d/plugin-cache"
-    # Set this in CodeBuild environment variables
-    # ARTIFACT_BUCKET: my-tf-artifacts-bucket
-    # Optionally for Docker Hub (if needed)
-    # DOCKER_HUB_USERNAME: ""
-    # DOCKER_HUB_PASSWORD: ""
+    TF_IN_AUTOMATION: "1"
+    # REQUIRED in CodeBuild env:
+    #   ARTIFACT_BUCKET=siriusxm-pipeline-artifacts
+    # OPTIONAL at runtime:
+    #   COMMIT_TO_APPLY=<commit-sha>
 
 phases:
   install:
     commands:
-      - yum update -y && yum install -y unzip
+      - set -euo pipefail
+      - yum install -y unzip >/dev/null || (yum update -y && yum install -y unzip)
       - curl -sSLO https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
       - unzip -o terraform_1.5.7_linux_amd64.zip && mv terraform /usr/local/bin/
       - mkdir -p "${TF_PLUGIN_CACHE_DIR}"
       - terraform version
-      # Root requirements are optional; keep if you need Python tooling at root
-      - |
-        if [ -f requirements.txt ]; then
-          pip install -r requirements.txt
-        fi
 
   pre_build:
     commands:
-      - echo "Fetching recent commit history"
-      - git fetch origin "+refs/heads/*:refs/remotes/origin/*" --depth=50 || true
-
-      # Detect changed directories across jobs/ and sp_jobs/
       - |
-        if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
-          BASE=$(git rev-parse HEAD^)
-          CHANGED_DIRS=$(git diff --name-only "$BASE" HEAD \
-            | grep -E "^(jobs|sp_jobs)/[^/]+/" \
-            | cut -d/ -f1-2 \
-            | sort -u || true)
+        set -euo pipefail
+        ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET}
+
+        # Decide commit to apply
+        if [ -n "${COMMIT_TO_APPLY:-}" ]; then
+          COMMIT="$COMMIT_TO_APPLY"
         else
-          # First build: consider all first-level dirs under jobs and sp_jobs
-          CHANGED_DIRS="$(find jobs sp_jobs -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)"
+          COMMIT="$(aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/latest.txt" - 2>/dev/null || true)"
         fi
-      - echo "CHANGED_DIRS=${CHANGED_DIRS:-<none>}"
 
-      # Identify Glue jobs as those under jobs/<name> that have a Dockerfile
+        if [ -z "${COMMIT}" ]; then
+          echo "No COMMIT provided and latest.txt missing — will skip apply."
+          SKIP_APPLY=1
+        else
+          echo "Fetching artifacts for commit: ${COMMIT}"
+          # Pull the entire run so configs + plans are present
+          aws s3 sync "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/" .
+        fi
+
+      # Determine plan dirs from manifest (preferred) or by discovering tfplan files
       - |
-        GLUE_JOBS=""
-        for dir in $CHANGED_DIRS; do
-          case "$dir" in
-            jobs/*)
-              if [ -f "$dir/Dockerfile" ]; then
-                job_name="$(basename "$dir")"
-                GLUE_JOBS="${GLUE_JOBS} ${job_name}"
-              fi
-              ;;
-          esac
-        done
-        GLUE_JOBS="$(echo "$GLUE_JOBS" | xargs -n1 | sort -u | xargs || true)"
-      - echo "GLUE_JOBS=${GLUE_JOBS:-<none>}"
+        if [ -z "${SKIP_APPLY:-}" ]; then
+          if [ -f plan_dirs.txt ]; then
+            echo "Using plan_dirs.txt"
+            PLAN_DIRS="$(sed '/^$/d' plan_dirs.txt | sort -u)"
+          else
+            echo "Discovering plan directories via tfplan files"
+            PLAN_DIRS=$(find jobs sp_jobs -type f -name tfplan 2>/dev/null | xargs -r -n1 dirname | sort -u)
+          fi
+        fi
+        echo "PLAN_DIRS: ${PLAN_DIRS:-<none>}"
 
-      # Optional docker login if you pull bases from private registry
-      # - docker login --username "$DOCKER_HUB_USERNAME" --password "$DOCKER_HUB_PASSWORD"
-
-      # Build wheels for changed Glue jobs (only if Dockerfile exists)
-      - echo "Building wheels for changed Glue jobs (if any)"
+      # Validate each plan dir has required files
       - |
-        for job in $GLUE_JOBS; do
-          [ -d "jobs/$job" ] || continue
-          pushd "jobs/$job" >/dev/null
-          rm -rf ./dist ./utils-0.1-py3-none-any.whl
-          echo "==> docker build glue-job-builder: jobs/$job"
-          docker build -t glue-job-builder .
-          CID=$(docker create glue-job-builder)
-          docker cp "$CID":/out/utils-0.1-py3-none-any.whl ./utils-0.1-py3-none-any.whl || true
-          docker rm "$CID" >/dev/null 2>&1 || true
-          popd >/dev/null
-        done
+        if [ -z "${SKIP_APPLY:-}" ] && [ -n "${PLAN_DIRS:-}" ]; then
+          MISSING=0
+          for dir in ${PLAN_DIRS}; do
+            [ -f "${dir}/terraform.tfbackend" ] || { echo "ERROR: ${dir} missing terraform.tfbackend"; MISSING=1; }
+            ls "${dir}"/*.tf >/dev/null 2>&1   || { echo "ERROR: ${dir} has no *.tf files"; MISSING=1; }
+            [ -f "${dir}/.terraform.lock.hcl" ] || { echo "ERROR: ${dir} missing .terraform.lock.hcl"; MISSING=1; }
+          done
+          if [ "${MISSING}" -ne 0 ]; then
+            echo "One or more plan directories are missing required files; aborting."
+            exit 1
+          fi
+        fi
+
+      # Optional: enforce Glue artifacts presence when those markers exist
+      - |
+        if [ -z "${SKIP_APPLY:-}" ] && [ -n "${PLAN_DIRS:-}" ]; then
+          for dir in ${PLAN_DIRS}; do
+            case "${dir}" in
+              jobs/*)
+                if [ -f "${dir}/requirements.txt" ] || ls "${dir}"/utils-*.whl >/dev/null 2>&1; then
+                  [ -f "${dir}/requirements.txt" ] || { echo "ERROR: ${dir} missing requirements.txt"; exit 1; }
+                  ls "${dir}"/utils-*.whl >/dev/null 2>&1 || { echo "ERROR: ${dir} missing utils-*.whl"; exit 1; }
+                fi
+                ;;
+            esac
+          done
+        fi
 
   build:
     commands:
-      # Terraform for every changed directory (both Redshift and Glue)
       - |
-        set -e
-        for dir in $CHANGED_DIRS; do
-          [ -d "$dir" ] || continue
-          echo "=== Terraform: $dir ==="
-          terraform -chdir="$dir" fmt -recursive || true
-          terraform -chdir="$dir" init -input=false -backend-config=terraform.tfbackend
-          # Validate available in both job types; ignore failure if not applicable
-          terraform -chdir="$dir" validate -no-color || true
-          # Plan with detailed exit codes; only fail on non-0/2
-          if terraform -chdir="$dir" plan -no-color -input=false -var-file=terraform.tfvars -out=tfplan -detailed-exitcode; then
-            :
+        set -euo pipefail
+        if [ -n "${SKIP_APPLY:-}" ]; then
+          echo "Skipping apply — no commit to apply."
+          exit 0
+        fi
+
+        if [ -z "${PLAN_DIRS:-}" ]; then
+          echo "No tfplan found. Nothing to apply."
+          exit 0
+        fi
+
+        APPLY_EXIT=0
+        : > apply_status.txt
+
+        for dir in ${PLAN_DIRS}; do
+          echo "=== Applying ${dir} ==="
+          # Use the exact provider selections from lockfile
+          terraform -chdir="${dir}" init -input=false -backend-config=terraform.tfbackend -lockfile=readonly
+          if terraform -chdir="${dir}" apply -input=false -no-color tfplan; then
+            echo "OK  ${dir}" | tee -a apply_status.txt
           else
-            EXIT=$?; [ "$EXIT" -eq 2 ] || exit "$EXIT"
+            echo "FAIL ${dir}" | tee -a apply_status.txt
+            APPLY_EXIT=1
           fi
-          terraform -chdir="$dir" show -no-color tfplan > "$dir/tfplan.txt" || true
-          terraform -chdir="$dir" show -json tfplan > "$dir/tfplan.json" || true
         done
 
-  post_build:
-    commands:
-      - |
-        set -e
-        ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET}
-        COMMIT=${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual-$(date +%s)}
-        echo "Uploading artifacts to s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/"
-        # Upload plans and wheels for both jobs/ and sp_jobs/
-        aws s3 sync . "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/" \
-          --exclude "*" \
-          --include "jobs/*/tfplan" \
-          --include "jobs/*/tfplan.txt" \
-          --include "jobs/*/tfplan.json" \
-          --include "jobs/*/utils-*.whl" \
-          --include "jobs/*/requirements.txt" \
-          --include "sp_jobs/*/tfplan" \
-          --include "sp_jobs/*/tfplan.txt" \
-          --include "sp_jobs/*/tfplan.json"
-
-        # Update latest pointer
-        printf %s "$COMMIT" | aws s3 cp - "s3://${ARTIFACT_BUCKET}/runs/latest.txt" \
-          --content-type text/plain --cache-control no-store
-        echo "Uploaded artifacts for commit ${COMMIT}"
+        exit ${APPLY_EXIT}
 
 artifacts:
   files:
-    # Terraform plan artifacts for both redshift and glue job folders
-    - jobs/**/tfplan
+    - apply_status.txt
+    - plan_dirs.txt
     - jobs/**/tfplan.txt
     - jobs/**/tfplan.json
-    - sp_jobs/**/tfplan
     - sp_jobs/**/tfplan.txt
     - sp_jobs/**/tfplan.json
-    # Glue wheel & per-job requirements (only present for glue jobs)
-    - jobs/**/utils-0.1-py3-none-any.whl
-    - jobs/**/requirements.txt
   discard-paths: no
 
 cache:
