@@ -182,7 +182,7 @@ def setup_glue_job(job_name):
     
     aws_account_id = get_aws_account_id()
 
-    unified_bucket = "talend-migration-unified-bucket"
+    unified_bucket = "talend-migrations-unified-bucket"
     updated_tfvars = tfvars_content.replace('default-unified-bucket', unified_bucket)
     updated_tfvars = updated_tfvars.replace('ACCOUNT_ID', aws_account_id)
     updated_tfvars += f'\njob_name = "{job_name}"\n'
