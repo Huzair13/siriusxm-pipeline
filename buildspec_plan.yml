@@ -97,12 +97,12 @@
 #     - /root/.terraform.d/plugin-cache/**
 
 
+
 version: 0.2
 
 env:
   variables:
-    TF_PLUGIN_CACHE_DIR: "/root/.terraform.d/plugin-cache"
-    TF_IN_AUTOMATION: "1"
+    TF_PLUGIN_CACHE_DIR: /root/.terraform.d/plugin-cache
 
 phases:
   install:
@@ -117,50 +117,75 @@ phases:
   pre_build:
     commands:
       - set -euo pipefail
-      - COMMIT=${CODEBUILD_RESOLVED_SOURCE_VERSION:-$(date +%s)}
-      - echo "${COMMIT}" | tee latest.txt
+      - APPLY_DIRS="$(find jobs sp_jobs -type f -name '*.tf' 2>/dev/null | xargs -r -n1 dirname | sort -u)"
+      - echo "APPLY_DIRS: ${APPLY_DIRS:-<none>}"
+      - printf '' > plan_dirs.txt
 
   build:
     commands:
-      - set -euo pipefail
       - |
-        # collect unique Terraform working dirs under jobs/ and sp_jobs/
-        APPLY_DIRS=$(find jobs sp_jobs -type f -name "*.tf" -exec dirname {} \; | sort -u || true)
-
-        # start fresh plan list
-        : > plan_dirs.txt
-
-        for dir in $APPLY_DIRS; do
-          echo "=== Planning in $dir ==="
-
-          terraform -chdir="$dir" init -input=false -backend-config=terraform.tfbackend
-          terraform -chdir="$dir" validate
-          terraform -chdir="$dir" plan -input=false -out=tfplan
-
-          terraform -chdir="$dir" show -json tfplan > tfplan.json
-          terraform -chdir="$dir" show tfplan > tfplan.txt
-
-          if [ ! -f "$dir/.terraform.lock.hcl" ]; then
-            echo "Missing .terraform.lock.hcl in $dir"
-            exit 1
-          fi
-
-          printf '%s\n' "$dir" >> plan_dirs.txt
+        set -euo pipefail
+        for dir in ${APPLY_DIRS}; do
+          echo "=== Planning in ${dir} ==="
+          terraform -chdir="${dir}" fmt -recursive
+          terraform -chdir="${dir}" init -input=false -backend-config=terraform.tfbackend
+          terraform -chdir="${dir}" validate -no-color
+          terraform -chdir="${dir}" plan -input=false -no-color -out=tfplan || exit $?
+          terraform -chdir="${dir}" show -json tfplan > "${dir}/tfplan.json" || true
+          terraform -chdir="${dir}" show tfplan > "${dir}/tfplan.txt" || true
+          [ -f "${dir}/.terraform.lock.hcl" ] || { echo "Missing .terraform.lock.hcl in ${dir}"; exit 1; }
+          echo "${dir}" >> plan_dirs.txt
         done
+
+  post_build:
+    commands:
+      - |
+        set -euo pipefail
+        ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET env var}
+        COMMIT=${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual-$(date +%s)}
+
+        echo "Uploading plan artifacts to s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/"
+        # Upload jobs/
+        aws s3 sync jobs/ "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/jobs/" \
+          --exclude "*" \
+          --include "*/tfplan" \
+          --include "*/tfplan.txt" \
+          --include "*/tfplan.json" \
+          --include "*/terraform.tfbackend" \
+          --include "*/.terraform.lock.hcl" \
+          --include "*/*.tf" \
+          --include "*/requirements.txt" \
+          --include "*/utils-*.whl"
+
+        # Upload sp_jobs/
+        aws s3 sync sp_jobs/ "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/sp_jobs/" \
+          --exclude "*" \
+          --include "*/tfplan" \
+          --include "*/tfplan.txt" \
+          --include "*/tfplan.json" \
+          --include "*/terraform.tfbackend" \
+          --include "*/.terraform.lock.hcl" \
+          --include "*/*.tf"
+
+        # Upload manifest + marker
+        aws s3 cp plan_dirs.txt "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/plan_dirs.txt"
+        printf %s "$COMMIT" | aws s3 cp - "s3://${ARTIFACT_BUCKET}/runs/latest.txt" --content-type text/plain --cache-control no-store
+        echo "Uploaded artifacts for commit ${COMMIT}"
 
 artifacts:
   files:
-    - latest.txt
     - plan_dirs.txt
     - jobs/**/tfplan
-    - jobs/**/tfplan.json
     - jobs/**/tfplan.txt
+    - jobs/**/tfplan.json
     - jobs/**/.terraform.lock.hcl
     - jobs/**/terraform.tfbackend
     - jobs/**/*.tf
+    - jobs/**/utils-0.1-py3-none-any.whl
+    - jobs/**/requirements.txt
     - sp_jobs/**/tfplan
-    - sp_jobs/**/tfplan.json
     - sp_jobs/**/tfplan.txt
+    - sp_jobs/**/tfplan.json
     - sp_jobs/**/.terraform.lock.hcl
     - sp_jobs/**/terraform.tfbackend
     - sp_jobs/**/*.tf
