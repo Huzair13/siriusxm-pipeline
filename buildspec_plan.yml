@@ -106,8 +106,6 @@ env:
   variables:
     TF_PLUGIN_CACHE_DIR: "/root/.terraform.d/plugin-cache"
     TF_IN_AUTOMATION: "1"
-    # REQUIRED: ARTIFACT_BUCKET=siriusxm-pipeline-artifacts
-    # OPTIONAL: COMMIT_SHA will default to current commit hash in CI/CD
 
 phases:
   install:
@@ -126,35 +124,31 @@ phases:
       - echo "${COMMIT}" | tee latest.txt
 
   build:
-     commands:
+    commands:
       - set -euo pipefail
       - |
         # collect unique Terraform working dirs under jobs/ and sp_jobs/
-        APPLY_DIRS=$(find jobs sp_jobs -type f -name "*.tf" -exec dirname {} \; | sort -u)
+        APPLY_DIRS=$(find jobs sp_jobs -type f -name "*.tf" -exec dirname {} \; | sort -u || true)
 
+        # start fresh plan list
         : > plan_dirs.txt
 
         for dir in $APPLY_DIRS; do
           echo "=== Planning in $dir ==="
 
-          # init with backend file present in each dir (adjust if it's elsewhere)
           terraform -chdir="$dir" init -input=false -backend-config=terraform.tfbackend
-
           terraform -chdir="$dir" validate
           terraform -chdir="$dir" plan -input=false -out=tfplan
 
-          # human & JSON plan outputs
           terraform -chdir="$dir" show -json tfplan > tfplan.json
           terraform -chdir="$dir" show tfplan > tfplan.txt
 
-          # enforce provider lockfile existence
           if [ ! -f "$dir/.terraform.lock.hcl" ]; then
             echo "Missing .terraform.lock.hcl in $dir"
             exit 1
           fi
 
-          echo "$dir" >> plan_dirs.txt
-        doneplan_dirs.txt
+          printf '%s\n' "$dir" >> plan_dirs.txt
         done
 
 artifacts:
