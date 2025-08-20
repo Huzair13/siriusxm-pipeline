@@ -81,38 +81,78 @@ env:
     # REQUIRED:
     #   ARTIFACT_BUCKET=siriusxm-pipeline-artifacts
     # OPTIONAL:
-    #   COMMIT_TO_APPLY=<commit-sha>
+    #   COMMIT_TO_APPLY=<commit-sha from plan stage>
 
 phases:
   install:
     commands:
-      - set -euo pipefail
-      - yum install -y unzip >/dev/null || (yum update -y && yum install -y unzip)
-      - curl -sSLO https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
-      - unzip -o terraform_1.5.7_linux_amd64.zip && mv terraform /usr/local/bin/
-      - mkdir -p "${TF_PLUGIN_CACHE_DIR}"
-      - terraform version
+      - |
+        set -euo pipefail
+        yum install -y unzip >/dev/null || (yum update -y && yum install -y unzip)
+        curl -sSLO https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
+        unzip -o terraform_1.5.7_linux_amd64.zip && mv terraform /usr/local/bin/
+        mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+        terraform version
 
   pre_build:
     commands:
       - |
         set -euo pipefail
         ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET}
+
+        # Figure out which plan commit to apply
         if [ -n "${COMMIT_TO_APPLY:-}" ]; then
           COMMIT="$COMMIT_TO_APPLY"
         else
           COMMIT="$(aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/latest.txt" - 2>/dev/null || true)"
         fi
+
         if [ -z "${COMMIT}" ]; then
-          echo "No COMMIT provided and latest.txt missing — will skip apply."
+          echo "No COMMIT provided and latest.txt missing — skipping apply."
           SKIP_APPLY=1
         else
-          echo "Fetching artifacts for commit: ${COMMIT}"
-          # IMPORTANT: sync the whole run, not just jobs/
-          aws s3 sync "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/" .
+          echo "Plan commit to apply: ${COMMIT}"
         fi
 
       - |
+        # Ensure the working tree matches the plan commit (use GitHub source)
+        if [ -z "${SKIP_APPLY:-}" ]; then
+          SRC_COMMIT="${CODEBUILD_RESOLVED_SOURCE_VERSION:-unknown}"
+          if [ "${SRC_COMMIT}" != "${COMMIT}" ]; then
+            echo "Checking out repo to plan commit ${COMMIT} (was ${SRC_COMMIT})"
+            git fetch --all --depth=1 || true
+            git checkout -f "${COMMIT}"
+          else
+            echo "Repo is already at plan commit ${COMMIT}"
+          fi
+        fi
+
+      - |
+        # Pull ONLY the necessary artifacts from S3 and overlay onto the repo:
+        # - tfplan (+ txt/json for audit)
+        # - .terraform.lock.hcl (provider set from plan)
+        # - requirements.txt / utils-*.whl (Glue assets)
+        if [ -z "${SKIP_APPLY:-}" ]; then
+          echo "Fetching minimal artifacts for commit ${COMMIT}"
+          # plan_dirs.txt helps us know exactly what to apply; OK if missing
+          aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/plan_dirs.txt" plan_dirs.txt 2>/dev/null || true
+
+          aws s3 sync "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/" . \
+            --exclude "*" \
+            --include "jobs/*/tfplan" \
+            --include "jobs/*/tfplan.txt" \
+            --include "jobs/*/tfplan.json" \
+            --include "jobs/*/.terraform.lock.hcl" \
+            --include "jobs/*/requirements.txt" \
+            --include "jobs/*/utils-*.whl" \
+            --include "sp_jobs/*/tfplan" \
+            --include "sp_jobs/*/tfplan.txt" \
+            --include "sp_jobs/*/tfplan.json" \
+            --include "sp_jobs/*/.terraform.lock.hcl"
+        fi
+
+      - |
+        # Work out which directories to apply
         if [ -z "${SKIP_APPLY:-}" ]; then
           if [ -f plan_dirs.txt ]; then
             echo "Using plan_dirs.txt"
@@ -125,14 +165,17 @@ phases:
         echo "PLAN_DIRS (raw): ${PLAN_DIRS:-<none>}"
 
       - |
-        # Filter to only those dirs that actually have tf + lock + backend
+        # Validate: repo provides *.tf and backend; artifacts provided the lock + plan
         if [ -z "${SKIP_APPLY:-}" ] && [ -n "${PLAN_DIRS:-}" ]; then
           VALID_DIRS=""
           for dir in ${PLAN_DIRS}; do
-            if [ -f "${dir}/terraform.tfbackend" ] && [ -f "${dir}/.terraform.lock.hcl" ] && ls "${dir}"/*.tf >/dev/null 2>&1; then
+            if ls "${dir}"/*.tf >/dev/null 2>&1 \
+               && [ -f "${dir}/terraform.tfbackend" ] \
+               && [ -f "${dir}/.terraform.lock.hcl" ] \
+               && [ -f "${dir}/tfplan" ]; then
               VALID_DIRS="${VALID_DIRS} ${dir}"
             else
-              echo "SKIP ${dir} (missing config/lock/backend)"
+              echo "SKIP ${dir} (missing one of: *.tf, terraform.tfbackend, .terraform.lock.hcl, tfplan)"
             fi
           done
           PLAN_DIRS="$(echo ${VALID_DIRS} | xargs -n1 2>/dev/null | sort -u || true)"
@@ -157,7 +200,7 @@ phases:
 
         for dir in ${PLAN_DIRS}; do
           echo "=== Applying ${dir} ==="
-          terraform -chdir="${dir}" init -input=false -backend-config=terraform.tfbackend -lockfile=readonly
+          terraform -chdir="${dir}" init -input=false -backend-config=terraform.tfbackend -lockfile=readonly -reconfigure
           if terraform -chdir="${dir}" apply -input=false -no-color tfplan; then
             echo "OK  ${dir}" | tee -a apply_status.txt
           else
@@ -165,6 +208,9 @@ phases:
             APPLY_EXIT=1
           fi
         done
+
+        echo "==== Apply Summary ===="
+        cat apply_status.txt || true
 
         exit ${APPLY_EXIT}
 
