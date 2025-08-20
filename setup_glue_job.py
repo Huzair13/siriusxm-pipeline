@@ -113,8 +113,8 @@ def get_aws_region():
 
 def update_tfbackend(job_path, job_name, aws_region):
     tfbackend_path = os.path.join(job_path, 'terraform.tfbackend')
-    bucket_name = f"presidio-jobs-tf-state"
-    dynamodb_table_name = f"terraform-state-lock-talend-migration"
+    bucket_name = f"terraform-state-talend-migrations-{aws_region}"
+    dynamodb_table_name = f"terraform-state-lock-talend-migration-{aws_region}"
     
     content = f"""bucket         = "{bucket_name}"
 key            = "glue-jobs/{job_name}/terraform.tfstate"
