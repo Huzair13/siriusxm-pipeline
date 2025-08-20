@@ -9,8 +9,8 @@ variable "common_tags" {
   default     = {}
 }
 
-variable "utils_bucket_name" {
-  description = "The name of the S3 bucket for utility files"
+variable "unified_bucket_name" {
+  description = "The name of the unified S3 bucket for Glue assets, utility files, and requirements"
   type        = string
 }
 
@@ -52,14 +52,4 @@ variable "trigger_type" {
   description = "The type of trigger to create (if create_trigger is true)"
   type        = string
   default     = "ON_DEMAND"
-}
-
-variable "glue_assets_bucket" {
-  description = "The name of the S3 bucket for Glue assets"
-  type        = string  
-}
-
-variable "utils_requirements_bucket_name" {
-  description = "The name of the S3 bucket for utility requirements files"
-  type        = string
 }
