@@ -77,15 +77,17 @@ version: 0.2
 env:
   variables:
     TF_PLUGIN_CACHE_DIR: "/root/.terraform.d/plugin-cache"
-    # REQUIRED: set in CodeBuild env
-    # ARTIFACT_BUCKET: siriusxm-pipeline-artifacts
-    # OPTIONAL: override the commit to apply
-    # COMMIT_TO_APPLY: <commit-sha>
+    TF_IN_AUTOMATION: "1"
+    # REQUIRED in project/pipeline env:
+    #   ARTIFACT_BUCKET=siriusxm-pipeline-artifacts
+    # OPTIONAL override at runtime:
+    #   COMMIT_TO_APPLY=<commit-sha>
 
 phases:
   install:
     commands:
-      - yum update -y && yum install -y unzip
+      - set -euo pipefail
+      - yum install -y unzip >/dev/null || (yum update -y && yum install -y unzip)
       - curl -sSLO https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
       - unzip -o terraform_1.5.7_linux_amd64.zip && mv terraform /usr/local/bin/
       - mkdir -p "${TF_PLUGIN_CACHE_DIR}"
@@ -94,87 +96,96 @@ phases:
   pre_build:
     commands:
       - |
-        set -e
+        set -euo pipefail
         ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET}
-        # Decide which commit to apply: explicit override or latest.txt
+        # Decide which commit to apply
         if [ -n "${COMMIT_TO_APPLY:-}" ]; then
           COMMIT="$COMMIT_TO_APPLY"
         else
           COMMIT="$(aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/latest.txt" - 2>/dev/null || true)"
         fi
 
-        if [ -z "$COMMIT" ]; then
-          echo "No COMMIT provided and latest.txt missing — skipping apply."
+        if [ -z "${COMMIT}" ]; then
+          echo "No COMMIT provided and latest.txt missing — will skip apply."
           SKIP_APPLY=1
         else
-          echo "Fetching artifacts for commit: $COMMIT"
-          # Pull the entire run tree so both jobs/ and sp_jobs/ are available
+          echo "Fetching artifacts for commit: ${COMMIT}"
+          # Pull the whole run so configs + plans for both trees are present
           aws s3 sync "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/" .
         fi
 
-      # Discover plan directories (both jobs/ and sp_jobs/)
+      # Discover plan directories in jobs/ and sp_jobs/
       - |
         if [ -z "${SKIP_APPLY:-}" ]; then
           PLAN_DIRS=$(find jobs sp_jobs -type f -name tfplan 2>/dev/null | xargs -r -n1 dirname | sort -u)
         fi
         echo "PLAN_DIRS: ${PLAN_DIRS:-<none>}"
 
-      # Identify Glue jobs (under jobs/) and validate their wheel + requirements
+      # Validate each plan dir has config & lock & backend files (or fail early)
       - |
-        if [ -z "${SKIP_APPLY:-}" ]; then
-          GLUE_DIRS=""
-          for d in $PLAN_DIRS; do
-            case "$d" in
+        if [ -z "${SKIP_APPLY:-}" ] && [ -n "${PLAN_DIRS:-}" ]; then
+          MISSING=0
+          for dir in ${PLAN_DIRS}; do
+            [ -f "${dir}/terraform.tfbackend" ] || { echo "ERROR: ${dir} missing terraform.tfbackend"; MISSING=1; }
+            ls "${dir}"/*.tf >/dev/null 2>&1 || { echo "ERROR: ${dir} has no *.tf files"; MISSING=1; }
+            [ -f "${dir}/.terraform.lock.hcl" ] || { echo "ERROR: ${dir} missing .terraform.lock.hcl"; MISSING=1; }
+          done
+          if [ "${MISSING}" -ne 0 ]; then
+            echo "One or more plan directories are missing required files; aborting."
+            exit 1
+          fi
+        fi
+
+      # (Optional) Validate Glue artifacts only for Glue job dirs
+      - |
+        if [ -z "${SKIP_APPLY:-}" ] && [ -n "${PLAN_DIRS:-}" ]; then
+          for dir in ${PLAN_DIRS}; do
+            case "${dir}" in
               jobs/*)
-                # Treat as Glue job if wheel/reqs exist alongside the plan
-                if ls "$d"/utils-*.whl >/dev/null 2>&1 && [ -f "$d/requirements.txt" ]; then
-                  GLUE_DIRS="$GLUE_DIRS $d"
+                # Enforce presence of Glue artifacts when present for job dirs
+                if [ -f "${dir}/requirements.txt" ] || ls "${dir}"/utils-*.whl >/dev/null 2>&1; then
+                  [ -f "${dir}/requirements.txt" ] || { echo "ERROR: ${dir} missing requirements.txt"; exit 1; }
+                  ls "${dir}"/utils-*.whl >/dev/null 2>&1 || { echo "ERROR: ${dir} missing utils-*.whl"; exit 1; }
                 fi
                 ;;
             esac
-          done
-          GLUE_DIRS="$(echo "$GLUE_DIRS" | xargs -n1 | sort -u | xargs || true)"
-          echo "GLUE_DIRS (validated for wheel/requirements): ${GLUE_DIRS:-<none>}"
-
-          # Enforce presence of artifacts for Glue jobs only
-          for gd in $GLUE_DIRS; do
-            [ -f "$gd/requirements.txt" ] || { echo "Missing requirements.txt in $gd"; exit 1; }
-            ls "$gd"/utils-*.whl >/dev/null 2>&1 || { echo "Missing utils-*.whl in $gd"; exit 1; }
           done
         fi
 
   build:
     commands:
       - |
+        set -euo pipefail
         if [ -n "${SKIP_APPLY:-}" ]; then
           echo "Skipping apply — no commit to apply."
-        elif [ -z "${PLAN_DIRS:-}" ]; then
-          echo "No tfplan found. Nothing to apply."
-        else
-          set +e
-          APPLY_EXIT=0
-          for dir in $PLAN_DIRS; do
-            echo "=== Applying $dir ==="
-            terraform -chdir="$dir" init -input=false -backend-config=terraform.tfbackend
-            if terraform -chdir="$dir" apply -input=false -no-color tfplan; then
-              echo "Apply OK: $dir"
-            else
-              echo "Apply FAILED: $dir"
-              APPLY_EXIT=1
-            fi
-          done
-          exit $APPLY_EXIT
+          exit 0
         fi
 
-  post_build:
-    commands:
-      - |
-        echo "apply status: commit=${COMMIT:-none}, skip=${SKIP_APPLY:-0}, plans=${PLAN_DIRS:-none}, time=$(date -u +%FT%TZ)" > apply_status.txt
+        if [ -z "${PLAN_DIRS:-}" ]; then
+          echo "No tfplan found. Nothing to apply."
+          exit 0
+        fi
+
+        APPLY_EXIT=0
+        : > apply_status.txt
+
+        for dir in ${PLAN_DIRS}; do
+          echo "=== Applying ${dir} ==="
+          # Ensure module/plugins are wired exactly as plan expects
+          terraform -chdir="${dir}" init -input=false -backend-config=terraform.tfbackend -lockfile=readonly
+          if terraform -chdir="${dir}" apply -input=false -no-color tfplan; then
+            echo "OK  ${dir}" | tee -a apply_status.txt
+          else
+            echo "FAIL ${dir}" | tee -a apply_status.txt
+            APPLY_EXIT=1
+          fi
+        done
+
+        exit ${APPLY_EXIT}
 
 artifacts:
   files:
     - apply_status.txt
-    # Keep plan renders handy for auditing
     - jobs/**/tfplan.txt
     - jobs/**/tfplan.json
     - sp_jobs/**/tfplan.txt
