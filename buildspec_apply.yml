@@ -77,142 +77,67 @@ version: 0.2
 env:
   variables:
     TF_PLUGIN_CACHE_DIR: /root/.terraform.d/plugin-cache
-    TF_IN_AUTOMATION: "1"
-    # REQUIRED:
-    #   ARTIFACT_BUCKET=siriusxm-pipeline-artifacts
-    # OPTIONAL:
-    #   COMMIT_TO_APPLY=<commit-sha from plan stage>
+    # ARTIFACT_BUCKET must be set
+    # COMMIT_TO_APPLY is optional to override commit id
 
 phases:
   install:
     commands:
-      - |
-        set -euo pipefail
-        yum install -y unzip >/dev/null || (yum update -y && yum install -y unzip)
-        curl -sSLO https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
-        unzip -o terraform_1.5.7_linux_amd64.zip && mv terraform /usr/local/bin/
-        mkdir -p "${TF_PLUGIN_CACHE_DIR}"
-        terraform version
+      - yum update -y && yum install -y unzip
+      - curl -sSLO https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
+      - unzip -o terraform_1.5.7_linux_amd64.zip && mv terraform /usr/local/bin/
+      - mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+      - terraform version
 
   pre_build:
     commands:
+      - set -e
+      - ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET}
       - |
-        set -euo pipefail
-        ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET}
-        # Which plan commit to apply?
-        if [ -n "${COMMIT_TO_APPLY:-}" ]; then
-          COMMIT="$COMMIT_TO_APPLY"
-        else
-          COMMIT="$(aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/latest.txt" - 2>/dev/null || true)"
-        fi
-        if [ -z "${COMMIT}" ]; then
-          echo "No COMMIT provided and latest.txt missing — skipping apply."
-          SKIP_APPLY=1
-        else
-          echo "Plan commit: ${COMMIT}"
-        fi
-
+        if [ -n "${COMMIT_TO_APPLY:-}" ]; then COMMIT="$COMMIT_TO_APPLY"; else COMMIT="$(aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/latest.txt" - 2>/dev/null || true)"; fi
       - |
-        # Ensure repo matches the plan commit
-        if [ -z "${SKIP_APPLY:-}" ]; then
-          SRC_COMMIT="${CODEBUILD_RESOLVED_SOURCE_VERSION:-unknown}"
-          if [ "${SRC_COMMIT}" != "${COMMIT}" ]; then
-            echo "Checking out repo to ${COMMIT}"
-            git fetch --all --depth=1 || true
-            git checkout -f "${COMMIT}"
-          else
-            echo "Repo already at ${COMMIT}"
-          fi
-        fi
-
+        if [ -z "$COMMIT" ]; then echo "No COMMIT provided and latest.txt missing — nothing to apply."; SKIP_APPLY=1; else echo "Fetching artifacts for commit: $COMMIT"; aws s3 sync "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/" .; fi
       - |
-        # Overlay only the artifacts (no TF code from S3)
-        if [ -z "${SKIP_APPLY:-}" ]; then
-          echo "Fetching plan artifacts for ${COMMIT}"
-          aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/plan_dirs.txt" plan_dirs.txt 2>/dev/null || true
-          aws s3 sync "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/" . \
-            --exclude "*" \
-            --include "jobs/*/tfplan" \
-            --include "jobs/*/tfplan.txt" \
-            --include "jobs/*/tfplan.json" \
-            --include "jobs/*/.terraform.lock.hcl" \
-            --include "jobs/*/requirements.txt" \
-            --include "jobs/*/utils-*.whl" \
-            --include "sp_jobs/*/tfplan" \
-            --include "sp_jobs/*/tfplan.txt" \
-            --include "sp_jobs/*/tfplan.json" \
-            --include "sp_jobs/*/.terraform.lock.hcl"
-        fi
-
+        if [ -z "${SKIP_APPLY:-}" ]; then PLAN_DIRS=$(find jobs sp_jobs -type f -name tfplan 2>/dev/null | xargs -r -n1 dirname | sort -u); fi
+      - echo "PLAN_DIRS: ${PLAN_DIRS:-<none>}"
       - |
-        # Determine which dirs to apply
-        if [ -z "${SKIP_APPLY:-}" ]; then
-          if [ -f plan_dirs.txt ]; then
-            echo "Using plan_dirs.txt"
-            PLAN_DIRS="$(sed '/^$/d' plan_dirs.txt | sort -u)"
-          else
-            echo "Discovering plan directories via tfplan files"
-            PLAN_DIRS=$(find jobs sp_jobs -type f -name tfplan 2>/dev/null | xargs -r -n1 dirname | sort -u)
-          fi
-        fi
-        echo "PLAN_DIRS (raw): ${PLAN_DIRS:-<none>}";
-
-      - |
-        # Validate: repo provides TF & backend; artifacts provided lock & plan
-        if [ -z "${SKIP_APPLY:-}" ] && [ -n "${PLAN_DIRS:-}" ]; then
-          VALID_DIRS=""
-          for dir in ${PLAN_DIRS}; do
-            if ls "${dir}"/*.tf >/dev/null 2>&1 \
-               && [ -f "${dir}/terraform.tfbackend" ] \
-               && [ -f "${dir}/.terraform.lock.hcl" ] \
-               && [ -f "${dir}/tfplan" ]; then
-              VALID_DIRS="${VALID_DIRS} ${dir}"
-            else
-              echo "SKIP ${dir} (missing one of: *.tf, terraform.tfbackend, .terraform.lock.hcl, tfplan)"
-            fi
-          done
-          PLAN_DIRS="$(echo ${VALID_DIRS} | xargs -n1 2>/dev/null | sort -u || true)"
-        fi
-        echo "PLAN_DIRS (valid): ${PLAN_DIRS:-<none>}"
+        for dir in $PLAN_DIRS; do
+          case $dir in
+            jobs/*)
+              [ -f "$dir/utils-0.1-py3-none-any.whl" ] || { echo "Missing wheel for $dir"; exit 1; }
+              [ -f "$dir/requirements.txt" ] || { echo "Missing requirements.txt for $dir"; exit 1; }
+              ;;
+          esac
+        done
 
   build:
     commands:
+      - if [ -n "${SKIP_APPLY:-}" ]; then echo "Skipping apply — no commit to apply."; fi
       - |
-        set -euo pipefail
-        if [ -n "${SKIP_APPLY:-}" ]; then
-          echo "Skipping apply — no commit to apply."
-          exit 0
+        if [ -z "${SKIP_APPLY:-}" ] && [ -n "${PLAN_DIRS:-}" ]; then
+          APPLY_EXIT=0
+          for dir in $PLAN_DIRS; do
+            echo "=== Applying $dir ==="
+            terraform -chdir="$dir" init -input=false -backend-config=terraform.tfbackend
+            if terraform -chdir="$dir" apply -input=false -no-color tfplan; then
+              echo "Apply OK: $dir"
+            else
+              echo "Apply FAILED: $dir"
+              APPLY_EXIT=1
+            fi
+          done
+          exit $APPLY_EXIT
+        else
+          echo "No tfplan found. Nothing to apply."
         fi
-        if [ -z "${PLAN_DIRS:-}" ]; then
-          echo "No valid tfplan directories. Nothing to apply."
-          exit 0
-        fi
 
-        APPLY_EXIT=0
-        : > apply_status.txt
-
-        for dir in ${PLAN_DIRS}; do
-          echo "=== Applying ${dir} ==="
-          terraform -chdir="${dir}" init -input=false -backend-config=terraform.tfbackend -lockfile=readonly -reconfigure
-          if terraform -chdir="${dir}" apply -input=false -no-color tfplan; then
-            echo "OK  ${dir}" | tee -a apply_status.txt
-          else
-            echo "FAIL ${dir}" | tee -a apply_status.txt
-            APPLY_EXIT=1
-          fi
-        done
-
-        echo "==== Apply Summary ===="
-        cat apply_status.txt || true
-        exit ${APPLY_EXIT}
+  post_build:
+    commands:
+      - echo "apply status: commit=${COMMIT:-none}, skip=${SKIP_APPLY:-0}, plans=${PLAN_DIRS:-none}, time=$(date -u +%FT%TZ)" > apply_status.txt
 
 artifacts:
   files:
     - apply_status.txt
-    - jobs/**/tfplan.txt
-    - jobs/**/tfplan.json
-    - sp_jobs/**/tfplan.txt
-    - sp_jobs/**/tfplan.json
   discard-paths: no
 
 cache:
