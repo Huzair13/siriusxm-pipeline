@@ -179,10 +179,7 @@ phases:
           JOB_LIST="${JOBS_FROM_ENV}"
           SRC_JOBS="override"
         else
-          JOB_LIST="$(ALL="${JOBS_ALL}" INIT="${INIT_JOBS}" \
-            python3 -c 'import os
-          ts=lambda s:set(s.split()) if s and s.strip() else set()
-          print(" ".join(sorted(ts(os.environ.get("ALL","")) - ts(os.environ.get("INIT","")))))')"
+          JOB_LIST="$(ALL="${JOBS_ALL}" INIT="${INIT_JOBS}" python3 -c 'import os; ts=lambda s:set(s.split()) if s and s.strip() else set(); print(" ".join(sorted(ts(os.environ.get("ALL","")) - ts(os.environ.get("INIT","")))))')"
           SRC_JOBS="new-folders"
         fi
         echo "Source (jobs) => ${SRC_JOBS}"
@@ -193,10 +190,7 @@ phases:
           SP_LIST="${SP_FROM_ENV}"
           SRC_SP="override"
         else
-          SP_LIST="$(ALL="${SP_ALL}" INIT="${INIT_SP}" \
-            python3 -c 'import os
-          ts=lambda s:set(s.split()) if s and s.strip() else set()
-          print(" ".join(sorted(ts(os.environ.get("ALL","")) - ts(os.environ.get("INIT","")))))')"
+          SP_LIST="$(ALL="${SP_ALL}" INIT="${INIT_SP}" python3 -c 'import os; ts=lambda s:set(s.split()) if s and s.strip() else set(); print(" ".join(sorted(ts(os.environ.get("ALL","")) - ts(os.environ.get("INIT","")))))')"
           SRC_SP="new-folders"
         fi
         echo "Source (sp_jobs) => ${SRC_SP}"
