@@ -186,7 +186,7 @@ env:
 phases:
   install:
     commands:
-      # This phase is now minimal because our custom image has all tools pre-installed.
+      # This phase is minimal because the custom image has all tools pre-installed.
       - |
         set -e
         echo "Verifying tools from custom image..."
@@ -195,7 +195,7 @@ phases:
 
   pre_build:
     commands:
-      # This phase downloads and validates the artifacts from the successful 'plan' stage.
+      # Download and restore artifacts from the successful 'plan' stage.
       - |
         set -e
         # Validate that the required ARTIFACT_BUCKET variable is set.
@@ -234,7 +234,7 @@ phases:
 
   build:
     commands:
-      # This phase iterates through the directories with a plan and applies them.
+      # Apply each plan. Serialize Terraform operations and retry on Redshift concurrent txn conflicts.
       - |
         set -e
         if [ -n "${SKIP_APPLY:-}" ]; then
@@ -243,16 +243,44 @@ phases:
           APPLY_EXIT=0
           for dir in $PLAN_DIRS; do
             echo "=== Applying Terraform plan for: $dir ==="
+
             # Initialize Terraform using the locked provider versions from the plan stage.
             terraform -chdir="$dir" init -input=false -backend-config=terraform.tfbackend -lockfile=readonly
-            
-            # Apply the plan file.
-            if terraform -chdir="$dir" apply -input=false -no-color tfplan; then
-              echo "SUCCESS: Apply for $dir completed."
-            else
-              echo "FAILURE: Apply for $dir failed."
-              APPLY_EXIT=1 # Mark the overall build as failed.
-            fi
+
+            # Serialize operations to avoid Redshift concurrent transaction conflicts.
+            TF_APPLY_CMD=(terraform -chdir="$dir" apply -input=false -no-color -parallelism=1 tfplan)
+
+            # Retry on specific Redshift conflict with exponential backoff.
+            attempts=0
+            max_attempts=3
+            backoff=10
+            log="/tmp/apply_$(echo "$dir" | tr '/-' '__').log"
+
+            while true; do
+              # Run apply and tee output to a log we can inspect.
+              if "${TF_APPLY_CMD[@]}" >"$log" 2>&1; then
+                echo "SUCCESS: Apply for $dir completed."
+                # Show a short tail for context.
+                tail -n 50 "$log" || true
+                break
+              else
+                rc=$?
+                # Check for the Redshift concurrent transaction error (and a couple of common variants).
+                if grep -Eqi "conflict with concurrent transaction|another operation is in progress|ConcurrentModification" "$log"; then
+                  attempts=$((attempts+1))
+                  if [ $attempts -lt $max_attempts ]; then
+                    echo "WARN: Detected transient Redshift concurrency issue. Retry $attempts/$((max_attempts-1)) after ${backoff}s..."
+                    sleep $backoff
+                    backoff=$((backoff*2))
+                    continue
+                  fi
+                fi
+                echo "FAILURE: Apply for $dir failed (exit $rc). Last log lines:"
+                tail -n 100 "$log" || true
+                APPLY_EXIT=1
+                break
+              fi
+            done
           done
           exit $APPLY_EXIT
         else
@@ -261,7 +289,7 @@ phases:
 
   post_build:
     commands:
-      # This phase records the status of the apply operation.
+      # Record the status of the apply operation.
       - |
         echo "apply run completed. commit=${COMMIT:-none}, skip_apply=${SKIP_APPLY:-0}, applied_dirs='${PLAN_DIRS:-none}', status_time=$(date -u +%FT%TZ)" > apply_status.txt
 
