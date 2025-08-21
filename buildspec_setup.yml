@@ -15,24 +15,42 @@ phases:
       - pip3 --version || true
       - if [ -f requirements.txt ]; then pip3 install -r requirements.txt; fi
       - if ! aws --version >/dev/null 2>&1; then pip3 install awscli; fi
-      # This is the line that was causing the error. It's now quoted.
       - "if [ -z \"${MANIFEST_BUCKET}\" ]; then echo 'ERROR: MANIFEST_BUCKET is not set'; exit 1; fi"
-      - echo "Using manifest s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"
+      - 'echo "Using manifest s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"'
 
   pre_build:
     commands:
-      # No colons in these commands, so no quotes needed.
-      - JOBS_FROM_ENV="$(echo "${JOBS}" | tr ',' ' ' | xargs || true)"
-      - JOBS_ALL="$( (find jobs -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null) || (ls -d jobs/*/ 2>/dev/null | xargs -n1 basename) || true )"
-      - 'echo "Found job folders => ${JOBS_ALL:-none}"'
-      - TMP_MANIFEST="/tmp/initialized-jobs.json"
-      - if aws s3api head-object --bucket "${MANIFEST_BUCKET}" --key "${MANIFEST_KEY}" >/dev/null 2>&1; then aws s3 cp "s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}" "${TMP_MANIFEST}"; echo 'Loaded manifest'; else echo '[]' > "${TMP_MANIFEST}"; echo 'No manifest found; starting fresh'; fi
-      - INIT_JOBS="$(python3 -c 'import json; print(\" \".join(sorted(set(map(str, json.load(open(\"/tmp/initialized-jobs.json\")))))))')"
-      - 'echo "Already initialized => ${INIT_JOBS:-none}"'
-      - if [ -n "${JOBS_FROM_ENV}" ]; then JOB_LIST="${JOBS_FROM_ENV}"; SOURCE="override"; else JOB_LIST="$(python3 -c 'import os; ts=lambda s: set(s.split()) if s and s.strip() else set(); print(\" \".join(sorted(ts(os.environ.get(\"JOBS_ALL\",\"\")) - ts(os.environ.get(\"INIT_JOBS\",\"\")))))')"; SOURCE="new-folders"; fi
-      - 'echo "Source => ${SOURCE}"'
-      - 'echo "Jobs to initialize => ${JOB_LIST:-<none>}"'
-      - echo "${JOB_LIST:-}" > /tmp/job_list.txt
+      - |
+        set -e
+        JOBS_FROM_ENV="$(echo "${JOBS}" | tr ',' ' ' | xargs || true)"
+        JOBS_ALL="$( (find jobs -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null) || (ls -d jobs/*/ 2>/dev/null | xargs -n1 basename) || true )"
+        echo "Found job folders => ${JOBS_ALL:-none}"
+        
+        TMP_MANIFEST="/tmp/initialized-jobs.json"
+        if aws s3api head-object --bucket "${MANIFEST_BUCKET}" --key "${MANIFEST_KEY}" >/dev/null 2>&1; then
+          aws s3 cp "s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}" "${TMP_MANIFEST}"
+          echo "Loaded manifest"
+        else
+          echo "[]" > "${TMP_MANIFEST}"
+          echo "No manifest found; starting fresh"
+        fi
+        
+        INIT_JOBS="$(python3 -c 'import json; print(\" \".join(sorted(set(map(str, json.load(open(\"/tmp/initialized-jobs.json\")))))))')"
+        echo "Already initialized => ${INIT_JOBS:-none}"
+
+        # Logic to determine which jobs to run
+        if [ -n "${JOBS_FROM_ENV}" ]; then
+          JOB_LIST="${JOBS_FROM_ENV}"
+          SOURCE="override"
+        else
+          # Use python to get the difference between all jobs and initialized jobs
+          JOB_LIST="$(python3 -c 'import os; ts=lambda s: set(s.split()) if s and s.strip() else set(); print(\" \".join(sorted(ts(os.environ.get("JOBS_ALL","")) - ts(os.environ.get("INIT_JOBS","")))))')"
+          SOURCE="new-folders"
+        fi
+        
+        echo "Source => ${SOURCE}"
+        echo "Jobs to initialize => ${JOB_LIST:-<none>}"
+        echo "${JOB_LIST:-}" > /tmp/job_list.txt
 
   build:
     commands:
@@ -41,7 +59,6 @@ phases:
         if [ -z "${JOB_LIST:-}" ]; then
           echo "No new jobs to initialize. Skipping setup."
         else
-          # Quoted to handle the colon safely
           echo "Running setup_glue_job.py for: ${JOB_LIST}"
           if [ "${DRY_RUN}" = "true" ]; then
             echo "[DRY RUN] python3 setup_glue_job.py ${JOB_LIST}"
@@ -52,22 +69,23 @@ phases:
 
   post_build:
     commands:
+      # Each command block is now self-contained and safe for the YAML parser.
       - |
         set -e
-        JOB_LIST="$(cat /tmp/job_list.txt 2>/dev/null || true)"
         if [ "${DRY_RUN}" = "true" ]; then 
-          # Quoted to handle the colon safely
           echo "[PB] DRY RUN: skipping manifest & push"
           exit 0
         fi
+        JOB_LIST="$(cat /tmp/job_list.txt 2>/dev/null || true)"
         if [ -z "${JOB_LIST}" ]; then
           echo "[PB] No changes to manifest"
         else
-          python3 -c 'import json,os;p="/tmp/initialized-jobs.json";cur=set(json.load(open(p)));cur|=set(os.environ.get("JOB_LIST","").split());open(p,"w").write(json.dumps(sorted(list(cur))))'
+          python3 -c 'import json,os;p="/tmp/initialized-jobs.json";cur=set(json.load(open(p)));cur.update(os.environ.get("JOB_LIST","").split());open(p,"w").write(json.dumps(sorted(list(cur))))'
           aws s3 cp /tmp/initialized-jobs.json "s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"
           echo "[PB] Manifest updated"
         fi
       - |
+        set -e
         git config --global safe.directory '*'
         git config --global user.name "${GIT_AUTHOR_NAME:-codebuild-bot}"
         git config --global user.email "${GIT_AUTHOR_EMAIL:-codebuild-bot@users.noreply.github.com}"
@@ -78,7 +96,7 @@ phases:
           fi
         fi
         BRANCH="${BRANCH:-main}"
-        echo "[PB] Branch=$BRANCH"
+        echo "[PB] Branch=${BRANCH}"
         if [ "$(git rev-parse --abbrev-ref HEAD)" = "$BRANCH" ]; then
           git fetch origin --prune || true
         else
@@ -86,22 +104,20 @@ phases:
         fi
         git checkout "${BRANCH}" || git checkout -B "${BRANCH}"
         git pull --ff-only origin "${BRANCH}" || true
-      - |
         JOB_LIST="$(cat /tmp/job_list.txt 2>/dev/null || true)"
         if [ -n "$JOB_LIST" ] && [ -n "$(git status --porcelain jobs/)" ]; then
           for j in $JOB_LIST; do git add "jobs/$j"; done
           git commit -m "chore(glue): initialized jobs ${JOB_LIST} [skip ci]"
         else
-          # Quoted to handle the colon safely
           echo "[PB] Nothing to commit for jobs: ${JOB_LIST:-<none>}"
         fi
       - |
+        set -e
         if [ -z "${GITHUB_TOKEN}" ]; then
-          # Quoted to handle the colon safely
           echo "[PB] ERROR: GITHUB_TOKEN empty" >&2
           exit 1
         else
-          echo "[PB] GITHUB_TOKEN is set, length=${#GITHUB_TOKEN}"
+          echo "[PB] GITHUB_TOKEN is set"
         fi
         git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git"
         git push origin "${BRANCH}" && echo "[PB] push done"
