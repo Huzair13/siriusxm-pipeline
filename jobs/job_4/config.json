@@ -1,0 +1,9 @@
+{
+  "name": "job_4",
+  "script_location": "jobs/job_4/main.py",
+  "python_version": "3.9",
+  "description": "Glue job for job_4",
+  "default_arguments": {
+    "--job-language": "python"
+  }
+}
