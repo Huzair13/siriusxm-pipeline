@@ -124,8 +124,8 @@ phases:
   install:
     commands:
       - set -euo pipefail
-      # - echo "Using pre-baked Python/AWS CLI/reqs from the custom image"
-      - : # python, pip, requirements, awscli are already in the custom image
+      - echo "Using pre-baked Python/AWS CLI/reqs from the custom image"
+      # - : # python, pip, requirements, awscli are already in the custom image
 
   pre_build:
     commands:
