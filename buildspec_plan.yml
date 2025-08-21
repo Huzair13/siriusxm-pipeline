@@ -416,17 +416,37 @@ phases:
           terraform -chdir="$dir" show -json tfplan > "$dir/tfplan.json" || true
         done
 
+  # In your buildspec_plan.yml
   post_build:
     commands:
-      # This phase also remains unchanged.
       - |
         set -e
         ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET}
         COMMIT=${CODEBUILD_RESOLVED_SOURCE_VERSION:-manual-$(date +%s)}
         echo "$CHANGED_DIRS" | tr ' ' '\n' | sed '/^$/d' > plan_manifest.txt
         echo "Uploading plan artifacts to s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/"
+        
+        # Corrected aws s3 sync command with specific include patterns
         aws s3 sync . "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/" \
-          --exclude "*" --include "plan_manifest.txt" --include "jobs/**" --include "sp_jobs/**"
+          --exclude "*" \
+          --include "plan_manifest.txt" \
+          --include "jobs/*/tfplan" \
+          --include "jobs/*/tfplan.txt" \
+          --include "jobs/*/tfplan.json" \
+          --include "jobs/*/.terraform.lock.hcl" \
+          --include "jobs/*/terraform.tfbackend" \
+          --include "jobs/*/terraform.tfvars" \
+          --include "jobs/*/*.tf" \
+          --include "jobs/*/utils-*.whl" \
+          --include "jobs/*/requirements.txt" \
+          --include "sp_jobs/*/tfplan" \
+          --include "sp_jobs/*/tfplan.txt" \
+          --include "sp_jobs/*/tfplan.json" \
+          --include "sp_jobs/*/.terraform.lock.hcl" \
+          --include "sp_jobs/*/terraform.tfbackend" \
+          --include "sp_jobs/*/terraform.tfvars" \
+          --include "sp_jobs/*/*.tf"
+
         printf %s "$COMMIT" | aws s3 cp - "s3://${ARTIFACT_BUCKET}/runs/latest.txt" --content-type text/plain --cache-control no-store
         echo "Uploaded artifacts for commit ${COMMIT}"
 
