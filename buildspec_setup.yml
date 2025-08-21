@@ -157,7 +157,23 @@ phases:
 
   build:
     commands:
-      - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; if [ -z \"${JOB_LIST:-}\" ]; then echo \"No new jobs to initialize. Skipping setup.\"; else echo \"Running setup_glue_job.py for: ${JOB_LIST}\"; if [ \"${DRY_RUN}\" = \"true\" ]; then echo \"[DRY RUN] python3 setup_glue_job.py ${JOB_LIST}\"; else python3 setup_glue_job.py ${JOB_LIST}; fi; fi"
+      - |
+        set -e
+        for job in $CHANGED_JOBS; do
+          [ -d "jobs/$job" ] || continue
+          echo "=== Planning $job ==="
+          terraform -chdir="jobs/$job" fmt -recursive
+          terraform -chdir="jobs/$job" init -input=false -backend-config=terraform.tfbackend
+          terraform -chdir="jobs/$job" validate -no-color
+          if terraform -chdir="jobs/$job" plan -no-color -input=false -var-file=terraform.tfvars -out=tfplan -detailed-exitcode; then
+            :
+          else
+            EXIT=$?; [ "$EXIT" -eq 2 ] || exit "$EXIT"
+          fi
+          terraform -chdir="jobs/$job" show -no-color tfplan > "jobs/$job/tfplan.txt" || true
+          terraform -chdir="jobs/$job" show -json tfplan > "jobs/$job/tfplan.json" || true
+        done
+
 
   post_build:
     commands:
