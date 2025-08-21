@@ -97,60 +97,6 @@ def create_utils_wheel(job_dir, wheel_output_folder, job_name):
     print(f"Created .whl bundle in {wheel_output_folder}")
 
 
-
-# def create_utils_wheel(src_folder, wheel_output_folder, job_name):
-#     import importlib.util
-#     import subprocess
-#     import sys
-
-#     # Ensure wheel_output_folder exists
-#     os.makedirs(wheel_output_folder, exist_ok=True)
-
-#     # Check for setuptools and wheel, try to install if missing
-#     for package in ['setuptools', 'wheel']:
-#         if importlib.util.find_spec(package) is None:
-#             try:
-#                 subprocess.check_call([sys.executable, "-m", "ensurepip", "--upgrade"])
-#             except Exception as e:
-#                 print(f"Warning: ensurepip failed: {e}")
-#             try:
-#                 subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", package])
-#             except Exception as e:
-#                 print(f"Failed to install {package}. Please install it manually.")
-#                 raise
-
-#     # Add a minimal setup.py if not exists
-# #     setup_py = os.path.join(src_folder, "setup.py")
-# #     if not os.path.exists(setup_py):
-# #         with open(setup_py, "w") as f:
-# #             f.write(f"""
-# # from setuptools import setup, find_packages
-# # setup(
-# #     name='utils',
-# #     version='0.1',
-# #     packages=find_packages(),
-# #     py_modules=['utils'],
-# #     description='Glue utils for {job_name}',
-# #     include_package_data=True,
-# # )
-# # """)
-# #     # Build the wheel (output to wheel_output_folder)
-# #     subprocess.check_call([
-# #         sys.executable, "setup.py", "bdist_wheel", "--dist-dir", wheel_output_folder
-# #     ], cwd=src_folder)
-# #     # Remove setup.py to clean up (optional)
-# #     os.remove(setup_py)
-# #     print(f"Created .whl bundle in {wheel_output_folder}")
-#     setup_py = os.path.join(job_path, "setup.py")
-#     if not os.path.exists(setup_py):
-#         ensure_setup_py(job_path, job_name)
-#     # Build the wheel (output to wheel_output_folder)
-#     subprocess.check_call([
-#         sys.executable, "setup.py", "bdist_wheel", "--dist-dir", wheel_output_folder
-#     ], cwd=job_path)
-#     print(f"Created .whl bundle in {wheel_output_folder}")
-
-
 def generate_valid_bucket_name(job_name):
     bucket_name = re.sub(r'[^a-zA-Z0-9-]', '-', job_name.lower())
     if not bucket_name[0].isalnum():
@@ -220,52 +166,24 @@ def setup_glue_job(job_name):
 
     print(f"Created config.json for {job_name}")
 
-    # Create empty utils.zip if it doesn't exist
-    # utils_zip_path = os.path.join(job_path, 'utils.zip')
-    # if not os.path.exists(utils_zip_path):
-    #     create_empty_zip(utils_zip_path)
-    #     print(f"Created empty utils.zip for {job_name}")
-
     utils_src_folder = os.path.join(job_path, 'src')
     utils_zip_path = os.path.join(job_path, 'utils.zip')
-    # if os.path.exists(utils_src_folder):
-    #     create_utils_zip(utils_src_folder, utils_zip_path)
-    #     print(f"Created utils.zip with code for {job_name}")
-    # else:
-    #     print(f"No utils folder found for {job_name}. Skipping utils.zip creation.")
-
-    # if os.path.exists(utils_src_folder):
-    #     # You can specify wheel output folder (e.g., job_path)
-    #     job_path = os.path.join(base_path, 'jobs', job_name)
-    #     create_utils_wheel(job_path, job_path, job_name)
-
 
     job_path = os.path.join(base_path, 'jobs', job_name)
     if os.path.exists(os.path.join(job_path, 'src')):
         create_utils_wheel(job_path, job_path, job_name)
 
-
-        # create_utils_wheel(utils_src_folder, job_path, job_name)
     else:
         print(f"No utils folder found for {job_name}. Skipping wheel creation.")
 
-    # if os.path.exists(utils_src_folder):
-    #     ensure_setup_py(utils_src_folder, job_name)
-    #     create_utils_wheel(utils_src_folder, job_path, job_name)
-    #     print(f"Created setup.py for {job_name}")
-
-
-    # Update terraform.tfvars with job-specific values
     tfvars_path = os.path.join(job_path, 'terraform.tfvars')
     with open(tfvars_path, 'r') as f:
         tfvars_content = f.read()
     
     aws_account_id = get_aws_account_id()
-    utils_bucket_name = "talend-migration-utils-bucket"
-    glue_assets_bucket = "talend-migration-glue-assets-bucket"
-    updated_tfvars = tfvars_content.replace('default-utils-bucket', utils_bucket_name)
-    updated_tfvars = updated_tfvars.replace('default-utils-requirements-bucket', utils_bucket_name)
-    updated_tfvars = updated_tfvars.replace('default-glue-assets-bucket', glue_assets_bucket)
+
+    unified_bucket = "talend-migrations-unified-bucket"
+    updated_tfvars = tfvars_content.replace('default-unified-bucket', unified_bucket)
     updated_tfvars = updated_tfvars.replace('ACCOUNT_ID', aws_account_id)
     updated_tfvars += f'\njob_name = "{job_name}"\n'
     
@@ -273,14 +191,6 @@ def setup_glue_job(job_name):
         f.write(updated_tfvars)
 
     print(f"Updated terraform.tfvars for {job_name}")
-    print(f"Utils bucket name: {utils_bucket_name}")
-
-# if __name__ == "__main__":
-#     parser = argparse.ArgumentParser(description="Set up a new AWS Glue job with Terraform configuration")
-#     parser.add_argument("job_name", help="Name of the Glue job to set up")
-#     args = parser.parse_args()
-
-#     setup_glue_job(args.job_name)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Set up new AWS Glue jobs with Terraform configuration")

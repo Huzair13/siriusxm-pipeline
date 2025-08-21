@@ -1,0 +1,55 @@
+# # Dockerfile.codebuild
+# FROM public.ecr.aws/codebuild/amazonlinux2-x86_64-standard:5.0
+
+# ARG TF_VERSION=1.5.7
+# ENV TF_PLUGIN_CACHE_DIR=/root/.terraform.d/plugin-cache PATH=/usr/local/bin:$PATH
+
+# USER root
+# RUN set -e \
+#  && mkdir -p /usr/local/bin /tmp/tfinstall \
+#  && curl -fsSL "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -o /tmp/tfinstall/terraform.zip \
+#  && unzip /tmp/tfinstall/terraform.zip -d /usr/local/bin \
+#  && terraform -version \
+#  && rm -rf /tmp/tfinstall \
+#  && mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+
+# Dockerfile.codebuild-lean
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023
+
+ARG TF_VERSION=1.5.7
+ENV TF_PLUGIN_CACHE_DIR=/root/.terraform.d/plugin-cache \
+    PATH=/usr/local/bin:$PATH
+
+USER root
+
+# Core tools (no 'curl' to avoid conflicts with curl-minimal)
+RUN set -e \
+ && dnf -y update \
+ && dnf -y install --setopt=install_weak_deps=False \
+      unzip tar gzip findutils git jq which shadow-utils util-linux ca-certificates wget \
+ && dnf -y install --setopt=install_weak_deps=False docker \
+ && dnf clean all && rm -rf /var/cache/dnf
+
+# AWS CLI v2: available as 'awscli' in AL2023 repos. Fallback to official installer if the repo lacks it.
+RUN set -e \
+ && (dnf -y install awscli || true) \
+ || ( \
+      echo "Repo awscli not found, using official installer..." && \
+      mkdir -p /tmp/awscli && \
+      wget -q -O /tmp/awscli/awscli.zip "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" && \
+      unzip -q /tmp/awscli/awscli.zip -d /tmp/awscli && \
+      /tmp/awscli/aws/install && \
+      rm -rf /tmp/awscli \
+    ) \
+ && aws --version
+
+# Terraform
+RUN set -e \
+ && mkdir -p /tmp/tfinstall \
+ && wget -q -O /tmp/tfinstall/terraform.zip \
+      "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" \
+ && unzip -q /tmp/tfinstall/terraform.zip -d /usr/local/bin \
+ && terraform -version \
+ && rm -rf /tmp/tfinstall \
+ && mkdir -p "${TF_PLUGIN_CACHE_DIR}"

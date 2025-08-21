@@ -1,130 +1,225 @@
+# version: 0.2
+
+# env:
+#   variables:
+#     MANIFEST_BUCKET: "terraform-state-talend-migrations-us-east-1"
+#     MANIFEST_KEY: "glue/setup/initialized-jobs.json"
+#     JOBS: ""
+#     DRY_RUN: "false"
+
+# phases:
+#   install:
+#     commands:
+#       - "set -euo pipefail"
+#       - "python3 --version || true"
+#       - "pip3 --version || true"
+#       - "if [ -f requirements.txt ]; then pip3 install -r requirements.txt; fi"
+#       - "if ! aws --version >/dev/null 2>&1; then pip3 install awscli; fi"
+#       - "if [ -z \"${MANIFEST_BUCKET}\" ]; then echo 'ERROR: MANIFEST_BUCKET is not set'; exit 1; fi"
+#       - "echo \"Using manifest s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}\""
+
+#   pre_build:
+#     commands:
+#       - "JOBS_FROM_ENV=\"$(echo \"${JOBS}\" | tr ',' ' ' | xargs || true)\""
+#       - "JOBS_ALL=\"$( (find jobs -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' 2>/dev/null) || (ls -d jobs/*/ 2>/dev/null | xargs -n1 basename) || true )\""
+#       - "echo \"Found job folders => ${JOBS_ALL:-none}\""
+#       - "TMP_MANIFEST=\"/tmp/initialized-jobs.json\""
+#       - "if aws s3api head-object --bucket \"${MANIFEST_BUCKET}\" --key \"${MANIFEST_KEY}\" >/dev/null 2>&1; then aws s3 cp \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}\" \"${TMP_MANIFEST}\"; echo 'Loaded manifest'; else echo '[]' > \"${TMP_MANIFEST}\"; echo 'No manifest found; starting fresh'; fi"
+#       - "INIT_JOBS=\"$(python3 -c 'import json; print(\" \".join(sorted(set(map(str, json.load(open(\"/tmp/initialized-jobs.json\")))))))')\""
+#       - "echo \"Already initialized => ${INIT_JOBS:-none}\""
+#       - "if [ -n \"${JOBS_FROM_ENV}\" ]; then JOB_LIST=\"${JOBS_FROM_ENV}\"; SOURCE=\"override\"; else JOB_LIST=\"$(python3 -c 'import os; ts=lambda s: set(s.split()) if s and s.strip() else set(); print(\" \".join(sorted(ts(os.environ.get(\"JOBS_ALL\",\"\")) - ts(os.environ.get(\"INIT_JOBS\",\"\")))))')\"; SOURCE=\"new-folders\"; fi"
+#       - "echo \"Source => ${SOURCE}\""
+#       - "echo \"Jobs to initialize => ${JOB_LIST:-<none>}\""
+#       - "echo \"${JOB_LIST:-}\" > /tmp/job_list.txt"
+
+#   build:
+#     commands:
+#       - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; if [ -z \"${JOB_LIST:-}\" ]; then echo \"No new jobs to initialize. Skipping setup.\"; else echo \"Running setup_glue_job.py for: ${JOB_LIST}\"; if [ \"${DRY_RUN}\" = \"true\" ]; then echo \"[DRY RUN] python3 setup_glue_job.py ${JOB_LIST}\"; else python3 setup_glue_job.py ${JOB_LIST}; fi; fi"
+
+#   # post_build:
+#   #   commands:
+#   #     - "if [ \"${DRY_RUN}\" = \"true\" ]; then echo \"[DRY RUN] Skipping manifest update\"; exit 0; fi"
+#   #     - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; if [ -z \"${JOB_LIST:-}\" ]; then echo \"No changes to manifest.\"; else python3 -c 'import json,os;p=\"/tmp/initialized-jobs.json\";cur=set(json.load(open(p)));cur|=set(os.environ.get(\"JOB_LIST\",\"\\n\").split());open(p,\"w\").write(json.dumps(sorted(cur)))'; aws s3 cp /tmp/initialized-jobs.json \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}\"; echo \"Manifest updated\"; fi"
+
+#   #     # ---- Commit & push generated code back to GitHub (guarded) ----
+#   #     - "echo '--- Push generated files back to GitHub ---'"
+#   #     - "git config --global safe.directory '*'"
+#   #     - "git config --global user.name \"${GIT_AUTHOR_NAME:-codebuild-bot}\""
+#   #     - "git config --global user.email \"${GIT_AUTHOR_EMAIL:-codebuild-bot@users.noreply.github.com}\""
+#   #     - "BRANCH=\"${CODEBUILD_WEBHOOK_HEAD_REF#refs/heads/}\"; if [ -z \"${BRANCH}\" ]; then if [ -n \"${CODEBUILD_SOURCE_VERSION:-}\" ] && echo \"${CODEBUILD_SOURCE_VERSION}\" | grep -q '^refs/heads/'; then BRANCH=\"${CODEBUILD_SOURCE_VERSION#refs/heads/}\"; elif [ -n \"${CODEBUILD_SOURCE_VERSION:-}\" ] && echo \"${CODEBUILD_SOURCE_VERSION}\" | grep -Eq '^[0-9a-f]{7,40}$'; then git fetch origin --prune >/dev/null 2>&1 || true; CANDIDATE=\"$(git branch -r --contains \"${CODEBUILD_SOURCE_VERSION}\" 2>/dev/null | sed -n 's|.*origin/||p' | head -n1)\"; BRANCH=\"${CANDIDATE}\"; fi; fi; BRANCH=\"${BRANCH:-${TARGET_BRANCH:-setup}}\"; echo \"Branch: ${BRANCH}\""
+#   #     - "git fetch origin \"${BRANCH}:${BRANCH}\" || true && git checkout \"${BRANCH}\" || git checkout -B \"${BRANCH}\" && git pull --ff-only origin \"${BRANCH}\" || true && (git rev-parse --is-shallow-repository >/dev/null 2>&1 && git fetch --unshallow || true)"
+#   #     - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; CHANGED=0; for j in ${JOB_LIST}; do git add \"jobs/${j}\" 2>/dev/null && CHANGED=1; done; if [ \"$CHANGED\" -eq 0 ]; then echo 'Nothing new to commit'; else git commit -m \"chore(setup): initialize Glue jobs (${JOB_LIST}) [skip ci]\" && git remote set-url origin \"https://x-access-token:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git\" && git push origin \"${BRANCH}\"; fi"
+#   #     # - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; CHANGED=0; for j in ${JOB_LIST}; do git add \"jobs/${j}\" 2>/dev/null && CHANGED=1; done; if [ \"$CHANGED\" -eq 0 ]; then echo 'Nothing new to commit'; else git commit -m \"chore(setup): initialize Glue jobs (${JOB_LIST}) [skip ci]\" && git remote set-url origin \"https://x-access-token:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git\" && git push origin \"${BRANCH}\"; fi"
+
+
+#   post_build:
+#     commands:
+#       - |
+#         if [ "${DRY_RUN}" = "true" ]; then 
+#           echo "[PB] DRY RUN: skipping manifest & push"
+#           exit 0
+#         fi
+
+#       # Update manifest
+#       - |
+#         JOB_LIST="$(cat /tmp/job_list.txt 2>/dev/null || true)"
+#         if [ -z "${JOB_LIST}" ]; then
+#           echo "[PB] No changes to manifest"
+#         else
+#           python3 -c 'import json,os;p="/tmp/initialized-jobs.json";cur=set(json.load(open(p)));cur|=set(os.environ.get("JOB_LIST","").split());open(p,"w").write(json.dumps(sorted(cur)))'
+#           aws s3 cp /tmp/initialized-jobs.json "s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"
+#           echo "[PB] Manifest updated"
+#         fi
+
+#       # Git setup
+#       - git config --global safe.directory '*'
+#       - git config --global user.name "${GIT_AUTHOR_NAME:-codebuild-bot}"
+#       - git config --global user.email "${GIT_AUTHOR_EMAIL:-codebuild-bot@users.noreply.github.com}"
+
+#       # Resolve branch
+#       - |
+#         BRANCH="${CODEBUILD_WEBHOOK_HEAD_REF#refs/heads/}"
+#         if [ -z "$BRANCH" ]; then
+#           if [[ "${CODEBUILD_SOURCE_VERSION:-}" =~ ^refs/heads/ ]]; then
+#             BRANCH="${CODEBUILD_SOURCE_VERSION#refs/heads/}"
+#           elif [[ "${CODEBUILD_SOURCE_VERSION:-}" =~ ^[0-9a-f]{7,40}$ ]]; then
+#             git fetch origin --prune >/dev/null 2>&1 || true
+#             BRANCH="$(git branch -r --contains "${CODEBUILD_SOURCE_VERSION}" 2>/dev/null | sed -n 's|.*origin/||p' | head -n1)"
+#           fi
+#         fi
+#         BRANCH="${BRANCH:-${TARGET_BRANCH:-setup}}"
+#         echo "[PB] Branch=$BRANCH"
+
+#       - git fetch origin "${BRANCH}:${BRANCH}" || true
+#       - git checkout "${BRANCH}" || git checkout -B "${BRANCH}"
+#       - git pull --ff-only origin "${BRANCH}" || true
+
+#       # Commit only if files changed
+#       - |
+#         JOB_LIST="$(cat /tmp/job_list.txt 2>/dev/null || true)"
+#         if [ -n "$JOB_LIST" ] && [ -n "$(git status --porcelain jobs/)" ]; then
+#           git add "jobs/${JOB_LIST}"
+#           git commit -m "chore(glue): initialized jobs ${JOB_LIST} [skip ci]"
+#         else
+#           echo "[PB] Nothing to commit for jobs: ${JOB_LIST:-<none>}"
+#         fi
+
+#       # Push
+#       - |
+#         if [ -z "${GITHUB_TOKEN}" ]; then
+#           echo "[PB] ERROR: GITHUB_TOKEN empty" >&2
+#           exit 1
+#         else
+#           echo "[PB] GITHUB_TOKEN is set, length=${#GITHUB_TOKEN}"
+#         fi
+#         git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git"
+#         git push origin "${BRANCH}" && echo "[PB] push done"
+
+# artifacts:
+#   files:
+#     - "**/*"
+#   discard-paths: no
+
+
+
 version: 0.2
 
 env:
   variables:
-    MANIFEST_BUCKET: "terraform-state-talend-migrations-us-east-1"                 # e.g., my-ci-state-bucket
-    MANIFEST_KEY: "glue/setup/initialized-jobs.json"
-    JOBS: ""                            # optional override: "job_6 job_7" or "job_6,job_7"
-    DRY_RUN: "false"                    # set "true" to preview
+    TF_PLUGIN_CACHE_DIR: /root/.terraform.d/plugin-cache
+    # ARTIFACT_BUCKET must be set
+    # COMMIT_TO_APPLY is optional to override commit id
 
 phases:
   install:
     commands:
-      - set -euo pipefail
-      - echo "Python: $(python3 --version || true)"
-      - echo "Pip: $(pip3 --version || true)"
-      - if [ -f requirements.txt ]; then pip3 install -r requirements.txt; fi
       - |
-        if ! aws --version >/dev/null 2>&1; then
-          echo "awscli not found; installing..."
-          pip3 install awscli
-        fi
-      - |
-        if [ -z "${MANIFEST_BUCKET}" ]; then
-          echo "ERROR: MANIFEST_BUCKET is not set."
-          exit 1
-        fi
-        echo "State manifest: s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"
+        set -e
+        yum update -y && yum install -y unzip
+        curl -sSLO https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
+        unzip -o terraform_1.5.7_linux_amd64.zip && mv terraform /usr/local/bin/
+        mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+        terraform version
 
   pre_build:
     commands:
-      - echo "Resolving jobs to initialize (one-time setup)…"
-      # Normalize optional override from env
-      - JOBS_FROM_ENV="$(echo "${JOBS}" | tr ',' ' ' | xargs || true)"
-      # List current job folders in repo
       - |
-        list_all_jobs() {
-          if [ -d jobs ]; then
-            # prefer 'find' with -printf; fallback to ls if -printf unsupported
-            find jobs -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null \
-              || ls -d jobs/*/ 2>/dev/null | xargs -n1 basename
-          fi
-        }
-        JOBS_ALL="$(list_all_jobs || true)"
-        echo "Found job folders: ${JOBS_ALL:-<none>}"
+        set -e
+        # Validate required env
+        if [ -z "${ARTIFACT_BUCKET:-}" ]; then echo "ERROR: Set ARTIFACT_BUCKET env var"; exit 1; fi
 
-      # Pull manifest from S3 (create empty if missing)
-      - |
-        TMP_MANIFEST="/tmp/initialized-jobs.json"
-        if aws s3api head-object --bucket "${MANIFEST_BUCKET}" --key "${MANIFEST_KEY}" >/dev/null 2>&1; then
-          aws s3 cp "s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}" "${TMP_MANIFEST}"
-          echo "Loaded existing manifest."
+        # Resolve commit to apply
+        if [ -n "${COMMIT_TO_APPLY:-}" ]; then
+          COMMIT="$COMMIT_TO_APPLY"
         else
-          echo '[]' > "${TMP_MANIFEST}"
-          echo "No manifest found; starting fresh."
+          COMMIT="$(aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/latest.txt" - 2>/dev/null || true)"
         fi
-        echo "Current manifest contents:"; cat "${TMP_MANIFEST}"
 
-      # Compute NEW jobs = current folders - already-initialized (unless override provided)
-      - |
-        if [ -n "${JOBS_FROM_ENV}" ]; then
-          JOB_LIST="${JOBS_FROM_ENV}"
-          SOURCE="override (env:JOBS)"
+        if [ -z "$COMMIT" ]; then
+          echo "No COMMIT provided and latest.txt missing - nothing to apply."
+          SKIP_APPLY=1
         else
-          # parse JSON array -> space list
-          INIT_JOBS="$(python3 - <<'PY'
-          import json,sys
-          data=json.load(open("/tmp/initialized-jobs.json"))
-          print(" ".join(sorted(set(data))))
-          PY
-        )"
-          echo "Already initialized: ${INIT_JOBS:-<none>}"
-          # set difference
-          JOB_LIST="$(python3 - <<'PY'
-        import sys,subprocess,shlex
-        def to_set(s): return set(s.split()) if s.strip() else set()
-        # read shell env via os
-        import os
-        jobs_all=os.environ.get("JOBS_ALL","")
-        init_jobs=os.environ.get("INIT_JOBS","")
-        new = to_set(jobs_all) - to_set(init_jobs)
-        print(" ".join(sorted(new)))
-        PY
-        )"
-          SOURCE="detected new folders (uninitialized)"
+          echo "Fetching artifacts for commit: $COMMIT"
+          aws s3 sync "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/" /tmp/artifacts/
+
+          # Copy relevant artifacts back into workspace (preserve relative paths)
+          while IFS= read -r -d '' f; do
+            rel="${f#/tmp/artifacts/}"
+            mkdir -p "$(dirname "$rel")"
+            cp -f "$f" "$rel"
+          done < <(find /tmp/artifacts -type f \( -name tfplan -o -name tfplan.txt -o -name tfplan.json -o -name '.terraform.lock.hcl' -o -name 'terraform.tfvars' -o -name 'terraform.tfbackend' -o -name 'utils-'\*'.whl' -o -name requirements.txt \) -print0)
         fi
 
-        if [ -z "${JOB_LIST:-}" ]; then
-          echo "No new jobs to initialize."
-          if [ "${DRY_RUN}" = "true" ]; then exit 0; fi
-          # nothing to do; exit successfully so manual trigger doesn't fail
-          exit 0
+        # Discover plan directories
+        if [ -z "${SKIP_APPLY:-}" ]; then
+          PLAN_DIRS="$(find jobs sp_jobs -type f -name tfplan 2>/dev/null | xargs -n1 dirname | sort -u)"
         fi
+        echo "PLAN_DIRS: ${PLAN_DIRS:-<none>}"
 
-        echo "Job source: ${SOURCE}"
-        echo "Jobs to initialize: ${JOB_LIST}"
+        # Validate Glue-specific artifacts
+        for dir in $PLAN_DIRS; do
+          case "$dir" in
+            jobs/*)
+              [ -f "$dir/utils-0.1-py3-none-any.whl" ] || { echo "Missing wheel for $dir"; exit 1; }
+              [ -f "$dir/requirements.txt" ] || { echo "Missing requirements.txt for $dir"; exit 1; }
+              ;;
+          esac
+        done
 
   build:
     commands:
       - |
-        echo "Executing setup_glue_job.py for: ${JOB_LIST}"
-        if [ "${DRY_RUN}" = "true" ]; then
-          echo "[DRY RUN] python3 setup_glue_job.py ${JOB_LIST}"
+        set -e
+        if [ -n "${SKIP_APPLY:-}" ]; then
+          echo "Skipping apply - no commit to apply."
+        elif [ -n "${PLAN_DIRS:-}" ]; then
+          APPLY_EXIT=0
+          for dir in $PLAN_DIRS; do
+            echo "=== Applying $dir ==="
+            # Keep provider versions consistent with plan
+            terraform -chdir="$dir" init -input=false -backend-config=terraform.tfbackend -lockfile=readonly || true
+            if terraform -chdir="$dir" apply -input=false -no-color tfplan; then
+              echo "Apply OK: $dir"
+            else
+              echo "Apply FAILED: $dir"
+              APPLY_EXIT=1
+            fi
+          done
+          exit $APPLY_EXIT
         else
-          python3 setup_glue_job.py ${JOB_LIST}
+          echo "No tfplan found. Nothing to apply."
         fi
 
   post_build:
     commands:
       - |
-        if [ "${DRY_RUN}" = "true" ]; then
-          echo "[DRY RUN] Skipping manifest update."
-          exit 0
-        fi
-        # Merge newly initialized jobs into manifest and push to S3
-        python3 - "$JOBS" "$JOBS_ALL" "$JOB_LIST" <<'PY'
-        import json, os, sys
-        tmp = "/tmp/initialized-jobs.json"
-        with open(tmp) as f: cur = set(json.load(f))
-        job_list = set(os.environ.get("JOB_LIST","").split())
-        cur |= job_list
-        with open(tmp, "w") as f: json.dump(sorted(cur), f)
-        print("Updated manifest:", sorted(cur))
-        PY
-        cat /tmp/initialized-jobs.json
-        aws s3 cp /tmp/initialized-jobs.json "s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"
+        echo "apply status: commit=${COMMIT:-none}, skip=${SKIP_APPLY:-0}, plans=${PLAN_DIRS:-none}, time=$(date -u +%FT%TZ)" > apply_status.txt
 
 artifacts:
   files:
-    - '**/*'
+    - apply_status.txt
   discard-paths: no
+
+cache:
+  paths:
+    - /root/.terraform.d/plugin-cache/**
