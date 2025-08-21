@@ -107,7 +107,7 @@ phases:
       # Push
       - |
         if [ -z "${GITHUB_TOKEN}" ]; then
-          echo "[PB] ERROR: GITHUB_TOKEN empty" >&2
+          
           exit 1
         else
           echo "[PB] GITHUB_TOKEN is set, length=${#GITHUB_TOKEN}"
