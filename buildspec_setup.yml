@@ -124,8 +124,8 @@ phases:
   install:
     commands:
       - set -euo pipefail
+      - echo "Using bucket: ${MANIFEST_BUCKET}"
       - echo "Using pre-baked Python/AWS CLI/reqs from the custom image"
-      # - : # python, pip, requirements, awscli are already in the custom image
 
   pre_build:
     commands:
@@ -179,35 +179,29 @@ phases:
           JOB_LIST="${JOBS_FROM_ENV}"
           SRC_JOBS="override"
         else
-          export ALL="${JOBS_ALL}"; export INIT="${INIT_JOBS}"
-          JOB_LIST="$(python3 - <<'PY'
-          import os
+          JOB_LIST="$(ALL="${JOBS_ALL}" INIT="${INIT_JOBS}" \
+            python3 -c 'import os
           ts=lambda s:set(s.split()) if s and s.strip() else set()
-          print(" ".join(sorted(ts(os.environ.get("ALL",""))-ts(os.environ.get("INIT","")))))
-          PY
-          )"
+          print(" ".join(sorted(ts(os.environ.get("ALL","")) - ts(os.environ.get("INIT","")))))')"
           SRC_JOBS="new-folders"
         fi
         echo "Source (jobs) => ${SRC_JOBS}"
         echo "Jobs to initialize => ${JOB_LIST:-<none>}"
-        echo "${JOB_LIST:-}" > /tmp/job_list.txt
+        printf "%s" "${JOB_LIST:-}" > /tmp/job_list.txt
       - |
         if [ -n "${SP_FROM_ENV}" ]; then
           SP_LIST="${SP_FROM_ENV}"
           SRC_SP="override"
         else
-          export ALL="${SP_ALL}"; export INIT="${INIT_SP}"
-          SP_LIST="$(python3 - <<'PY'
-          import os
+          SP_LIST="$(ALL="${SP_ALL}" INIT="${INIT_SP}" \
+            python3 -c 'import os
           ts=lambda s:set(s.split()) if s and s.strip() else set()
-          print(" ".join(sorted(ts(os.environ.get("ALL",""))-ts(os.environ.get("INIT","")))))
-          PY
-          )"
+          print(" ".join(sorted(ts(os.environ.get("ALL","")) - ts(os.environ.get("INIT","")))))')"
           SRC_SP="new-folders"
         fi
         echo "Source (sp_jobs) => ${SRC_SP}"
         echo "SP jobs to initialize => ${SP_LIST:-<none>}"
-        echo "${SP_LIST:-}" > /tmp/sp_list.txt
+        printf "%s" "${SP_LIST:-}" > /tmp/sp_list.txt
 
   build:
     commands:
