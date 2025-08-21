@@ -14,13 +14,15 @@ terraform {
 }
 
 module "redshift_procs" {
-  source             = "../../terraform_modules/redshift-procs"
-  database           = var.database
-  workgroup_name     = var.workgroup_name 
-  secret_arn         = var.secret_arn
+  source         = "../../terraform_modules/redshift-procs"
+  database       = var.database
+  workgroup_name = var.workgroup_name 
+  secret_arn     = var.secret_arn
+
   procedures = {
-    "${var.sp_job_name}" = {
-      sql_path = "${path.module}/sql/${var.sp_job_name}.sql"
+    for f in fileset("${path.module}", "*.sql") :
+    trimsuffix(basename(f), ".sql") => {
+      sql_path = "${path.module}/${f}"
       schema   = "etl"
     }
   }
