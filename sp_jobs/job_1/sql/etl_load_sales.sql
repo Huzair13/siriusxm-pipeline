@@ -3,7 +3,7 @@ create or replace procedure public.hello_world()
 language plpgsql
 as $$
 begin
-  raise notice 'Hello from Redshift! from job1';
+  raise notice 'Hello from Redshift! from Huzair Ahmed';
 end;
 $$;
 

@@ -72,98 +72,198 @@
 #     - /root/.terraform.d/plugin-cache/**
 
 
+# version: 0.2
+
+# env:
+#   variables:
+#     TF_PLUGIN_CACHE_DIR: /root/.terraform.d/plugin-cache
+#     # ARTIFACT_BUCKET must be set
+#     # COMMIT_TO_APPLY is optional to override commit id
+
+# phases:
+#   install:
+#     commands:
+#       - |
+#         set -e
+#         yum update -y && yum install -y unzip
+#         curl -sSLO https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
+#         unzip -o terraform_1.5.7_linux_amd64.zip && mv terraform /usr/local/bin/
+#         mkdir -p "${TF_PLUGIN_CACHE_DIR}"
+#         terraform version
+
+#   pre_build:
+#     commands:
+#       - |
+#         set -e
+#         # Validate required env
+#         if [ -z "${ARTIFACT_BUCKET:-}" ]; then echo "ERROR: Set ARTIFACT_BUCKET env var"; exit 1; fi
+
+#         # Resolve commit to apply
+#         if [ -n "${COMMIT_TO_APPLY:-}" ]; then
+#           COMMIT="$COMMIT_TO_APPLY"
+#         else
+#           COMMIT="$(aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/latest.txt" - 2>/dev/null || true)"
+#         fi
+
+#         if [ -z "$COMMIT" ]; then
+#           echo "No COMMIT provided and latest.txt missing - nothing to apply."
+#           SKIP_APPLY=1
+#         else
+#           echo "Fetching artifacts for commit: $COMMIT"
+#           aws s3 sync "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/" /tmp/artifacts/
+
+#           # Copy relevant artifacts back into workspace (preserve relative paths)
+#           while IFS= read -r -d '' f; do
+#             rel="${f#/tmp/artifacts/}"
+#             mkdir -p "$(dirname "$rel")"
+#             cp -f "$f" "$rel"
+#           done < <(find /tmp/artifacts -type f \( -name tfplan -o -name tfplan.txt -o -name tfplan.json -o -name '.terraform.lock.hcl' -o -name 'terraform.tfvars' -o -name 'terraform.tfbackend' -o -name 'utils-'\*'.whl' -o -name requirements.txt \) -print0)
+#         fi
+
+#         # Discover plan directories
+#         if [ -z "${SKIP_APPLY:-}" ]; then
+#           PLAN_DIRS="$(find jobs sp_jobs -type f -name tfplan 2>/dev/null | xargs -n1 dirname | sort -u)"
+#         fi
+#         echo "PLAN_DIRS: ${PLAN_DIRS:-<none>}"
+
+#         # Validate Glue-specific artifacts
+#         for dir in $PLAN_DIRS; do
+#           case "$dir" in
+#             jobs/*)
+#               [ -f "$dir/utils-0.1-py3-none-any.whl" ] || { echo "Missing wheel for $dir"; exit 1; }
+#               [ -f "$dir/requirements.txt" ] || { echo "Missing requirements.txt for $dir"; exit 1; }
+#               ;;
+#           esac
+#         done
+
+#   build:
+#     commands:
+#       - |
+#         set -e
+#         if [ -n "${SKIP_APPLY:-}" ]; then
+#           echo "Skipping apply - no commit to apply."
+#         elif [ -n "${PLAN_DIRS:-}" ]; then
+#           APPLY_EXIT=0
+#           for dir in $PLAN_DIRS; do
+#             echo "=== Applying $dir ==="
+#             # Keep provider versions consistent with plan
+#             terraform -chdir="$dir" init -input=false -backend-config=terraform.tfbackend -lockfile=readonly || true
+#             if terraform -chdir="$dir" apply -input=false -no-color tfplan; then
+#               echo "Apply OK: $dir"
+#             else
+#               echo "Apply FAILED: $dir"
+#               APPLY_EXIT=1
+#             fi
+#           done
+#           exit $APPLY_EXIT
+#         else
+#           echo "No tfplan found. Nothing to apply."
+#         fi
+
+#   post_build:
+#     commands:
+#       - |
+#         echo "apply status: commit=${COMMIT:-none}, skip=${SKIP_APPLY:-0}, plans=${PLAN_DIRS:-none}, time=$(date -u +%FT%TZ)" > apply_status.txt
+
+# artifacts:
+#   files:
+#     - apply_status.txt
+#   discard-paths: no
+
+# cache:
+#   paths:
+#     - /root/.terraform.d/plugin-cache/**
+
+
 version: 0.2
 
 env:
   variables:
     TF_PLUGIN_CACHE_DIR: /root/.terraform.d/plugin-cache
-    # ARTIFACT_BUCKET must be set
-    # COMMIT_TO_APPLY is optional to override commit id
+    # ARTIFACT_BUCKET must be set in the CodeBuild project environment
+    # COMMIT_TO_APPLY is an optional variable to apply a specific commit hash
 
 phases:
   install:
     commands:
+      # This phase is now minimal because our custom image has all tools pre-installed.
       - |
         set -e
-        yum update -y && yum install -y unzip
-        curl -sSLO https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
-        unzip -o terraform_1.5.7_linux_amd64.zip && mv terraform /usr/local/bin/
+        echo "Verifying tools from custom image..."
+        echo "Terraform version: $(terraform version | head -1)"
         mkdir -p "${TF_PLUGIN_CACHE_DIR}"
-        terraform version
 
   pre_build:
     commands:
+      # This phase downloads and validates the artifacts from the successful 'plan' stage.
       - |
         set -e
-        # Validate required env
+        # Validate that the required ARTIFACT_BUCKET variable is set.
         if [ -z "${ARTIFACT_BUCKET:-}" ]; then echo "ERROR: Set ARTIFACT_BUCKET env var"; exit 1; fi
 
-        # Resolve commit to apply
+        # Determine which commit's artifacts to apply.
         if [ -n "${COMMIT_TO_APPLY:-}" ]; then
           COMMIT="$COMMIT_TO_APPLY"
         else
+          # If not specified, get the latest successful plan from S3.
           COMMIT="$(aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/latest.txt" - 2>/dev/null || true)"
         fi
 
+        # If we have a commit, download and prepare its artifacts.
         if [ -z "$COMMIT" ]; then
-          echo "No COMMIT provided and latest.txt missing - nothing to apply."
+          echo "No COMMIT provided and latest.txt missing. Nothing to apply."
           SKIP_APPLY=1
         else
           echo "Fetching artifacts for commit: $COMMIT"
           aws s3 sync "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/" /tmp/artifacts/
 
-          # Copy relevant artifacts back into workspace (preserve relative paths)
+          # Copy the downloaded artifacts back into the current workspace, preserving their paths.
+          echo "Restoring artifacts to workspace..."
           while IFS= read -r -d '' f; do
-            rel="${f#/tmp/artifacts/}"
-            mkdir -p "$(dirname "$rel")"
-            cp -f "$f" "$rel"
-          done < <(find /tmp/artifacts -type f \( -name tfplan -o -name tfplan.txt -o -name tfplan.json -o -name '.terraform.lock.hcl' -o -name 'terraform.tfvars' -o -name 'terraform.tfbackend' -o -name 'utils-'\*'.whl' -o -name requirements.txt \) -print0)
+            rel_path="${f#/tmp/artifacts/}"
+            mkdir -p "$(dirname "$rel_path")"
+            cp -v "$f" "$rel_path"
+          done < <(find /tmp/artifacts -type f -print0)
         fi
 
-        # Discover plan directories
+        # Discover which directories have a tfplan file to apply.
         if [ -z "${SKIP_APPLY:-}" ]; then
           PLAN_DIRS="$(find jobs sp_jobs -type f -name tfplan 2>/dev/null | xargs -n1 dirname | sort -u)"
         fi
-        echo "PLAN_DIRS: ${PLAN_DIRS:-<none>}"
-
-        # Validate Glue-specific artifacts
-        for dir in $PLAN_DIRS; do
-          case "$dir" in
-            jobs/*)
-              [ -f "$dir/utils-0.1-py3-none-any.whl" ] || { echo "Missing wheel for $dir"; exit 1; }
-              [ -f "$dir/requirements.txt" ] || { echo "Missing requirements.txt for $dir"; exit 1; }
-              ;;
-          esac
-        done
+        echo "PLAN_DIRS to apply: ${PLAN_DIRS:-<none>}"
 
   build:
     commands:
+      # This phase iterates through the directories with a plan and applies them.
       - |
         set -e
         if [ -n "${SKIP_APPLY:-}" ]; then
-          echo "Skipping apply - no commit to apply."
+          echo "Skipping apply phase - no valid commit found."
         elif [ -n "${PLAN_DIRS:-}" ]; then
           APPLY_EXIT=0
           for dir in $PLAN_DIRS; do
-            echo "=== Applying $dir ==="
-            # Keep provider versions consistent with plan
-            terraform -chdir="$dir" init -input=false -backend-config=terraform.tfbackend -lockfile=readonly || true
+            echo "=== Applying Terraform plan for: $dir ==="
+            # Initialize Terraform using the locked provider versions from the plan stage.
+            terraform -chdir="$dir" init -input=false -backend-config=terraform.tfbackend -lockfile=readonly
+            
+            # Apply the plan file.
             if terraform -chdir="$dir" apply -input=false -no-color tfplan; then
-              echo "Apply OK: $dir"
+              echo "SUCCESS: Apply for $dir completed."
             else
-              echo "Apply FAILED: $dir"
-              APPLY_EXIT=1
+              echo "FAILURE: Apply for $dir failed."
+              APPLY_EXIT=1 # Mark the overall build as failed.
             fi
           done
           exit $APPLY_EXIT
         else
-          echo "No tfplan found. Nothing to apply."
+          echo "No tfplan files found. Nothing to apply."
         fi
 
   post_build:
     commands:
+      # This phase records the status of the apply operation.
       - |
-        echo "apply status: commit=${COMMIT:-none}, skip=${SKIP_APPLY:-0}, plans=${PLAN_DIRS:-none}, time=$(date -u +%FT%TZ)" > apply_status.txt
+        echo "apply run completed. commit=${COMMIT:-none}, skip_apply=${SKIP_APPLY:-0}, applied_dirs='${PLAN_DIRS:-none}', status_time=$(date -u +%FT%TZ)" > apply_status.txt
 
 artifacts:
   files:

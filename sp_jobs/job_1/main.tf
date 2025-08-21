@@ -13,7 +13,7 @@ terraform {
   }
 }
 
-#
+##
 module "redshift_procs" {
   source             = "../../terraform_modules/redshift-procs"
   database           = var.database
