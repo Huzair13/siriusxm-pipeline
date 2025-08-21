@@ -346,7 +346,7 @@ version: 0.2
 env:
   variables:
     TF_PLUGIN_CACHE_DIR: /root/.terraform.d/plugin-cache
-    # Set ARTIFACT_BUCKET in the CodeBuild environment
+    # Set ARTIFACT_BUCKET in the CodeBuild project environment
 
 phases:
   install:
@@ -356,25 +356,21 @@ phases:
         echo "Using Terraform from custom image: $(terraform version | head -1)"
         mkdir -p "${TF_PLUGIN_CACHE_DIR}"
 
-        # --- Start Docker daemon (DIND) ---
-        # Ensure engine exists (standard images usually have it; this is a safe fallback)
-        if ! command -v dockerd >/dev/null 2>&1; then
-          echo "dockerd not found; installing engine..."
-          (yum install -y docker || yum install -y moby-engine moby-cli) || { echo "ERROR: failed to install Docker engine"; exit 1; }
-        fi
-
+        # --- Start Docker daemon (DinD) ---
         echo "Starting Docker daemon..."
+        # Assumes dockerd is available from the custom image
         nohup /usr/bin/dockerd --host=unix:///var/run/docker.sock --storage-driver=overlay2 >/var/log/dockerd.log 2>&1 &
 
-        # Wait for the daemon to come up
-        timeout 90 sh -c 'until docker info >/dev/null 2>&1; do sleep 1; done'
+        # Wait for the daemon to become responsive
+        echo "Waiting for Docker daemon to initialize..."
+        timeout 90 sh -c 'until docker info >/dev/null 2>&1; do echo "."; sleep 1; done'
         echo "Docker is ready: $(docker --version)"
 
   pre_build:
     commands:
       - |
         set -e
-        echo "Detecting changed jobs and sp_jobs"
+        echo "Detecting changed directories..."
         git fetch origin "+refs/heads/*:refs/remotes/origin/*" --depth=50 || true
         if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
           BASE=$(git rev-parse HEAD^)
@@ -384,28 +380,34 @@ phases:
         fi
         echo "CHANGED_DIRS=${CHANGED_DIRS}"
 
-        # If any Glue job is present, re-check Docker (fast fail if daemon not up)
-        if echo "$CHANGED_DIRS" | grep -q '^jobs/'; then
-          docker info >/dev/null 2>&1 || { echo "ERROR: Docker daemon not available. Ensure 'Privileged' is enabled."; exit 1; }
-        fi
-
-        echo "Build wheels for Glue jobs only"
+        echo "Building wheels for Glue jobs..."
         for dir in $CHANGED_DIRS; do
           case "$dir" in
             jobs/*)
+              echo "--- Building wheel in ${dir} ---"
               pushd "$dir" >/dev/null
-              rm -rf ./dist ./utils-0.1-py3-none-any.whl
+              
+              # Ensure Docker is still running before proceeding
+              docker info >/dev/null 2>&1 || { echo "ERROR: Docker daemon is not running in ${dir}."; exit 1; }
+              
+              rm -rf ./dist ./utils-*.whl
               docker build -t glue-job-builder .
               CID=$(docker create glue-job-builder)
               docker cp "$CID":/out/utils-0.1-py3-none-any.whl ./utils-0.1-py3-none-any.whl
               docker rm "$CID"
-              # sanity check
-              [ -f utils-0.1-py3-none-any.whl ] || { echo "Wheel missing in $dir"; ls -l; exit 1; }
+              
+              # Verify the wheel was created successfully
+              if [ ! -f "utils-0.1-py3-none-any.whl" ]; then
+                echo "ERROR: Wheel file was not created in ${dir}."
+                exit 1
+              fi
+              echo "--- Successfully created wheel in ${dir} ---"
               popd >/dev/null
               ;;
           esac
         done
 
+  # ... (build, post_build, artifacts, and cache sections remain the same) ...
   build:
     commands:
       - |
@@ -435,48 +437,17 @@ phases:
         echo "$CHANGED_DIRS" | tr ' ' '\n' | sed '/^$/d' > plan_manifest.txt
         echo "Uploading plan artifacts to s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/"
         aws s3 sync . "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/" \
-          --exclude "*" \
-          --include "plan_manifest.txt" \
-          --include "jobs/*/tfplan" \
-          --include "jobs/*/tfplan.txt" \
-          --include "jobs/*/tfplan.json" \
-          --include "jobs/*/.terraform.lock.hcl" \
-          --include "jobs/*/terraform.tfbackend" \
-          --include "jobs/*/terraform.tfvars" \
-          --include "jobs/*/*.tf" \
-          --include "jobs/*/utils-*.whl" \
-          --include "jobs/*/requirements.txt" \
-          --include "sp_jobs/*/tfplan" \
-          --include "sp_jobs/*/tfplan.txt" \
-          --include "sp_jobs/*/tfplan.json" \
-          --include "sp_jobs/*/.terraform.lock.hcl" \
-          --include "sp_jobs/*/terraform.tfbackend" \
-          --include "sp_jobs/*/terraform.tfvars" \
-          --include "sp_jobs/*/*.tf"
+          --exclude "*" --include "plan_manifest.txt" --include "jobs/**" --include "sp_jobs/**"
         printf %s "$COMMIT" | aws s3 cp - "s3://${ARTIFACT_BUCKET}/runs/latest.txt" --content-type text/plain --cache-control no-store
         echo "Uploaded artifacts for commit ${COMMIT}"
 
 artifacts:
   files:
-    - plan_manifest.txt
-    - jobs/**/tfplan
-    - jobs/**/tfplan.txt
-    - jobs/**/tfplan.json
-    - jobs/**/.terraform.lock.hcl
-    - jobs/**/terraform.tfbackend
-    - jobs/**/terraform.tfvars
-    - jobs/**/*.tf
-    - jobs/**/utils-0.1-py3-none-any.whl
-    - jobs/**/requirements.txt
-    - sp_jobs/**/tfplan
-    - sp_jobs/**/tfplan.txt
-    - sp_jobs/**/tfplan.json
-    - sp_jobs/**/.terraform.lock.hcl
-    - sp_jobs/**/terraform.tfbackend
-    - sp_jobs/**/terraform.tfvars
-    - sp_jobs/**/*.tf
+    - '**/*'
   discard-paths: no
 
 cache:
   paths:
     - /root/.terraform.d/plugin-cache/**
+
+

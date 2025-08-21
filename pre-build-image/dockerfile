@@ -1,17 +1,68 @@
 # Dockerfile.codebuild
+# FROM public.ecr.aws/codebuild/amazonlinux2-x86_64-standard:5.0
+
+# ARG TF_VERSION=1.5.7
+# ENV TF_PLUGIN_CACHE_DIR=/root/.terraform.d/plugin-cache PATH=/usr/local/bin:$PATH
+
+# USER root
+# RUN set -e \
+#  && mkdir -p /usr/local/bin /tmp/tfinstall \
+#  && curl -fsSL "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -o /tmp/tfinstall/terraform.zip \
+#  && unzip /tmp/tfinstall/terraform.zip -d /usr/local/bin \
+#  && terraform -version \
+#  && rm -rf /tmp/tfinstall \
+#  && mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+
+# Dockerfile.codebuild
+# Builds a custom image with Terraform, Python build tools, AND the Docker engine.
+# CORRECTED FOR AMAZON LINUX 2023-based images.
+
+# Use the correct, specific Amazon Linux 2 base image for x86_64
 FROM public.ecr.aws/codebuild/amazonlinux2-x86_64-standard:5.0
 
+# Define the Terraform version as a build argument
 ARG TF_VERSION=1.5.7
-ENV TF_PLUGIN_CACHE_DIR=/root/.terraform.d/plugin-cache PATH=/usr/local/bin:$PATH
 
+# Set environment variables for Terraform and system PATH
+ENV TF_PLUGIN_CACHE_DIR=/root/.terraform.d/plugin-cache \
+    PATH=/usr/local/bin:$PATH
+
+# Switch to the root user to install software
 USER root
-RUN set -e \
- && mkdir -p /usr/local/bin /tmp/tfinstall \
- && curl -fsSL "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -o /tmp/tfinstall/terraform.zip \
- && unzip /tmp/tfinstall/terraform.zip -d /usr/local/bin \
- && terraform -version \
- && rm -rf /tmp/tfinstall \
- && mkdir -p "$TF_PLUGIN_CACHE_DIR"
+
+# --- Install Terraform ---
+RUN set -e; \
+    echo "Installing Terraform v${TF_VERSION}..."; \
+    mkdir -p /usr/local/bin /tmp/tfinstall; \
+    curl -fsSL "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -o /tmp/tfinstall/terraform.zip; \
+    unzip /tmp/tfinstall/terraform.zip -d /usr/local/bin; \
+    terraform -version; \
+    rm -rf /tmp/tfinstall; \
+    mkdir -p "$TF_PLUGIN_CACHE_DIR"; \
+    echo "Terraform installation complete."
+
+# --- Install Docker Engine (Corrected for AL2023) ---
+# This is required for Docker-in-Docker (DinD) functionality.
+RUN set -e; \
+    echo "Installing Docker engine on AL2023..."; \
+    yum update -y; \
+    # Use 'yum install' directly, as 'amazon-linux-extras' is not available on AL2023
+    yum install -y docker; \
+    yum install -y shadow-utils; \
+    usermod -aG docker root || true; \
+    echo "Docker engine installation complete."
+
+# --- Install Python Build Tools ---
+RUN set -e; \
+    echo "Installing Python build tools..."; \
+    yum install -y python3 python3-pip python3-devel gcc; \
+    pip3 install --upgrade pip build wheel setuptools; \
+    echo "Python build tools installation complete."
+
+# Final command to confirm Docker version (optional)
+CMD ["docker", "--version"]
+
 
 
 # Dockerfile.codebuild-lean
