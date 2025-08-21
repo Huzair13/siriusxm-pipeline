@@ -135,11 +135,8 @@ phases:
     commands:
       - |
         set -e
-        yum update -y && yum install -y unzip
-        curl -sSLO https://releases.hashicorp.com/terraform/1.5.7/terraform_1.5.7_linux_amd64.zip
-        unzip -o terraform_1.5.7_linux_amd64.zip && mv terraform /usr/local/bin/
+        echo "Using Terraform from custom image: $(terraform version | head -1)"
         mkdir -p "${TF_PLUGIN_CACHE_DIR}"
-        terraform version
 
   pre_build:
     commands:
@@ -176,8 +173,9 @@ phases:
         fi
         echo "PLAN_DIRS: ${PLAN_DIRS:-<none>}"
 
-        # Validate Glue-specific artifacts
+        # Validate required artifacts
         for dir in $PLAN_DIRS; do
+          [ -f "$dir/.terraform.lock.hcl" ] || { echo "Missing $dir/.terraform.lock.hcl. Re-run PLAN."; exit 1; }
           case "$dir" in
             jobs/*)
               [ -f "$dir/utils-0.1-py3-none-any.whl" ] || { echo "Missing wheel for $dir"; exit 1; }
@@ -196,8 +194,7 @@ phases:
           APPLY_EXIT=0
           for dir in $PLAN_DIRS; do
             echo "=== Applying $dir ==="
-            # Keep provider versions consistent with plan
-            terraform -chdir="$dir" init -input=false -backend-config=terraform.tfbackend -lockfile=readonly || true
+            terraform -chdir="$dir" init -input=false -backend-config=terraform.tfbackend -lockfile=readonly
             if terraform -chdir="$dir" apply -input=false -no-color tfplan; then
               echo "Apply OK: $dir"
             else
