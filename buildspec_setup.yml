@@ -87,7 +87,7 @@ phases:
             BRANCH="$(git branch -r --contains "${CODEBUILD_SOURCE_VERSION}" 2>/dev/null | sed -n 's|.*origin/||p' | head -n1)"
           fi
         fi
-        BRANCH="${BRANCH:-${TARGET_BRANCH:intial-setup}}"
+        BRANCH="${BRANCH:-${TARGET_BRANCH:-intial-setup}}"
         echo "[PB] Branch=$BRANCH"
 
       - git fetch origin "${BRANCH}:${BRANCH}" || true
