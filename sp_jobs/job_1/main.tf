@@ -34,7 +34,7 @@ module "redshift_procs" {
   secret_arn     = var.secret_arn
 
   procedures = {
-    for f in fileset("${path.module}/sql", "*.sql") :
+    for f in fileset("${path.module}", "*.sql") :
     trimsuffix(basename(f), ".sql") => {
       sql_path = "${path.module}/${f}"
       schema   = "etl"
