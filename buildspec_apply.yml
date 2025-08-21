@@ -92,33 +92,54 @@ phases:
   pre_build:
     commands:
       - set -e
-      - ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET}
+      - 'ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET}'
       - |
-        if [ -n "${COMMIT_TO_APPLY:-}" ]; then COMMIT="$COMMIT_TO_APPLY"; else COMMIT="$(aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/latest.txt" - 2>/dev/null || true)"; fi
+        if [ -n "${COMMIT_TO_APPLY:-}" ]; then
+          COMMIT="$COMMIT_TO_APPLY"
+        else
+          COMMIT="$(aws s3 cp "s3://${ARTIFACT_BUCKET}/runs/latest.txt" - 2>/dev/null || true)"
+        fi
       - |
-        if [ -z "$COMMIT" ]; then echo "No COMMIT provided and latest.txt missing — nothing to apply."; SKIP_APPLY=1; else echo "Fetching artifacts for commit: $COMMIT"; aws s3 sync "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/" .; fi
+        if [ -z "$COMMIT" ]; then
+          echo "No COMMIT provided and latest.txt missing - nothing to apply."
+          SKIP_APPLY=1
+        else
+          echo "Fetching artifacts for commit: $COMMIT"
+          aws s3 sync "s3://${ARTIFACT_BUCKET}/runs/${COMMIT}/" /tmp/artifacts/
+          # Overlay plans and wheels into workspace
+          find /tmp/artifacts -type f \( -name tfplan -o -name tfplan.txt -o -name tfplan.json -o -name 'utils-*.whl' -o -name requirements.txt -o -name '.terraform.lock.hcl' -o -name 'terraform.tfvars' -o -name 'terraform.tfbackend' \) -print0 | \
+            while IFS= read -r -d '' f; do
+              rel="${f#/tmp/artifacts/}"
+              mkdir -p "$(dirname "$rel")"
+              cp -f "$f" "$rel"
+            done
+        fi
       - |
-        if [ -z "${SKIP_APPLY:-}" ]; then PLAN_DIRS=$(find jobs sp_jobs -type f -name tfplan 2>/dev/null | xargs -r -n1 dirname | sort -u); fi
-      - echo "PLAN_DIRS: ${PLAN_DIRS:-<none>}"
+        if [ -z "${SKIP_APPLY:-}" ]; then
+          PLAN_DIRS="$(find jobs sp_jobs -type f -name tfplan -print0 2>/dev/null | xargs -0 -r -n1 dirname | sort -u)"
+        fi
+      - 'echo "PLAN_DIRS: ${PLAN_DIRS:-<none>}"'
       - |
         for dir in $PLAN_DIRS; do
-          case $dir in
+          case "$dir" in
             jobs/*)
-              [ -f "$dir/utils-0.1-py3-none-any.whl" ] || { echo "Missing wheel for $dir"; exit 1; }
-              [ -f "$dir/requirements.txt" ] || { echo "Missing requirements.txt for $dir"; exit 1; }
+              test -f "$dir/utils-0.1-py3-none-any.whl" || { echo "Missing wheel for $dir"; exit 1; }
+              test -f "$dir/requirements.txt" || { echo "Missing requirements.txt for $dir"; exit 1; }
               ;;
           esac
         done
 
   build:
     commands:
-      - if [ -n "${SKIP_APPLY:-}" ]; then echo "Skipping apply — no commit to apply."; fi
       - |
-        if [ -z "${SKIP_APPLY:-}" ] && [ -n "${PLAN_DIRS:-}" ]; then
+        if [ -n "${SKIP_APPLY:-}" ]; then
+          echo "Skipping apply - no commit to apply."
+        elif [ -n "${PLAN_DIRS:-}" ]; then
           APPLY_EXIT=0
           for dir in $PLAN_DIRS; do
             echo "=== Applying $dir ==="
-            terraform -chdir="$dir" init -input=false -backend-config=terraform.tfbackend
+            # Keep provider versions consistent with plan
+            terraform -chdir="$dir" init -input=false -backend-config=terraform.tfbackend -lockfile=readonly || true
             if terraform -chdir="$dir" apply -input=false -no-color tfplan; then
               echo "Apply OK: $dir"
             else
