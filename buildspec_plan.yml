@@ -348,6 +348,7 @@ env:
     TF_PLUGIN_CACHE_DIR: /root/.terraform.d/plugin-cache
     # Set ARTIFACT_BUCKET in the CodeBuild project environment
 
+# In your buildspec.yml
 phases:
   install:
     commands:
@@ -356,14 +357,19 @@ phases:
         echo "Using Terraform from custom image: $(terraform version | head -1)"
         mkdir -p "${TF_PLUGIN_CACHE_DIR}"
 
-        # --- Start Docker daemon (DinD) ---
+        # --- Start Docker daemon (DinD) with enhanced debugging ---
         echo "Starting Docker daemon..."
-        # Assumes dockerd is available from the custom image
         nohup /usr/bin/dockerd --host=unix:///var/run/docker.sock --storage-driver=overlay2 >/var/log/dockerd.log 2>&1 &
 
-        # Wait for the daemon to become responsive
+        # Wait for the daemon to become responsive. If it fails, print the logs.
         echo "Waiting for Docker daemon to initialize..."
-        timeout 90 sh -c 'until docker info >/dev/null 2>&1; do echo "."; sleep 1; done'
+        if ! timeout 90 sh -c 'until docker info >/dev/null 2>&1; do echo "."; sleep 1; done'; then
+          echo "ERROR: Docker daemon failed to start within 90 seconds."
+          echo "--- Displaying Docker daemon logs for debugging ---"
+          cat /var/log/dockerd.log
+          exit 1
+        fi
+        
         echo "Docker is ready: $(docker --version)"
 
   pre_build:
