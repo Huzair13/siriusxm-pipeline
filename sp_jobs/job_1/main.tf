@@ -13,14 +13,30 @@ terraform {
   }
 }
 
+# module "redshift_procs" {
+#   source             = "../../terraform_modules/redshift-procs"
+#   database           = var.database
+#   workgroup_name     = var.workgroup_name 
+#   secret_arn         = var.secret_arn
+#   procedures = {
+#     load_sales = {
+#       sql_path = "${path.module}/sql/etl_load_sales.sql"
+#       schema   = "etl"
+#     }
+#   }
+# }
+
+
 module "redshift_procs" {
-  source             = "../../terraform_modules/redshift-procs"
-  database           = var.database
-  workgroup_name     = var.workgroup_name 
-  secret_arn         = var.secret_arn
+  source         = "../../terraform_modules/redshift-procs"
+  database       = var.database
+  workgroup_name = var.workgroup_name 
+  secret_arn     = var.secret_arn
+
   procedures = {
-    load_sales = {
-      sql_path = "${path.module}/sql/etl_load_sales.sql"
+    for f in fileset("${path.module}/sql", "*.sql") :
+    trimsuffix(basename(f), ".sql") => {
+      sql_path = "${path.module}/${f}"
       schema   = "etl"
     }
   }
