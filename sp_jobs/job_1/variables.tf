@@ -10,6 +10,6 @@ variable "workgroup_name" {
 }
 
 variable "secret_arn" {
-    description = "The ARN of the AWS Secrets Manager secret containing the Redshift credentials"
-    type        = string
+  description = "The ARN of the AWS Secrets Manager secret containing the Redshift credentials"
+  type        = string
 }

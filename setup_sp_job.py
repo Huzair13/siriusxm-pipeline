@@ -59,12 +59,12 @@ def setup_sp_job(job_name):
     update_tfbackend(job_path, job_name, aws_region)
 
     # Create SQL directory and sample SQL file
-    sql_dir = os.path.join(job_path, 'sql')
-    os.makedirs(sql_dir, exist_ok=True)
-    with open(os.path.join(sql_dir, f'{job_name}.sql'), 'w') as f:
-        f.write(f"-- SQL for {job_name}\n")
+    # sql_dir = os.path.join(job_path)
+    # os.makedirs(sql_dir, exist_ok=True)
+    # with open(os.path.join(sql_dir, f'{job_name}.sql'), 'w') as f:
+    #     f.write(f"-- SQL for {job_name}\n")
 
-    print(f"Created SQL directory and sample SQL file for {job_name}")
+    # print(f"Created SQL directory and sample SQL file for {job_name}")
 
     # Update terraform.tfvars with job-specific values
     tfvars_path = os.path.join(job_path, 'terraform.tfvars')
@@ -72,7 +72,7 @@ def setup_sp_job(job_name):
         tfvars_content = f.read()
     
     updated_tfvars = tfvars_content.replace('ACCOUNT_ID', aws_account_id)
-    updated_tfvars = updated_tfvars.replace('SP_JOB_NAME', job_name)
+    # updated_tfvars = updated_tfvars.replace('SP_JOB_NAME', job_name)
     
     with open(tfvars_path, 'w') as f:
         f.write(updated_tfvars)
