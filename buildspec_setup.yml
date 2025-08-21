@@ -10,31 +10,42 @@ env:
 phases:
   install:
     commands:
-      - "set -euo pipefail"
-      - "python3 --version || true"
-      - "pip3 --version || true"
-      - "if [ -f requirements.txt ]; then pip3 install -r requirements.txt; fi"
-      - "if ! aws --version >/dev/null 2>&1; then pip3 install awscli; fi"
-      - "if [ -z \"${MANIFEST_BUCKET}\" ]; then echo 'ERROR: MANIFEST_BUCKET is not set'; exit 1; fi"
-      - "echo \"Using manifest s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}\""
+      - set -euo pipefail
+      - python3 --version || true
+      - pip3 --version || true
+      - if [ -f requirements.txt ]; then pip3 install -r requirements.txt; fi
+      - if ! aws --version >/dev/null 2>&1; then pip3 install awscli; fi
+      - if [ -z "${MANIFEST_BUCKET}" ]; then echo 'ERROR: MANIFEST_BUCKET is not set'; exit 1; fi
+      - echo "Using manifest s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"
 
   pre_build:
     commands:
-      - "JOBS_FROM_ENV=\"$(echo \"${JOBS}\" | tr ',' ' ' | xargs || true)\""
-      - "JOBS_ALL=\"$( (find jobs -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' 2>/dev/null) || (ls -d jobs/*/ 2>/dev/null | xargs -n1 basename) || true )\""
-      - "echo \"Found job folders => ${JOBS_ALL:-none}\""
-      - "TMP_MANIFEST=\"/tmp/initialized-jobs.json\""
-      - "if aws s3api head-object --bucket \"${MANIFEST_BUCKET}\" --key \"${MANIFEST_KEY}\" >/dev/null 2>&1; then aws s3 cp \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}\" \"${TMP_MANIFEST}\"; echo 'Loaded manifest'; else echo '[]' > \"${TMP_MANIFEST}\"; echo 'No manifest found; starting fresh'; fi"
-      - "INIT_JOBS=\"$(python3 -c 'import json; print(\" \".join(sorted(set(map(str, json.load(open(\"/tmp/initialized-jobs.json\")))))))')\""
-      - "echo \"Already initialized => ${INIT_JOBS:-none}\""
-      - "if [ -n \"${JOBS_FROM_ENV}\" ]; then JOB_LIST=\"${JOBS_FROM_ENV}\"; SOURCE=\"override\"; else JOB_LIST=\"$(python3 -c 'import os; ts=lambda s: set(s.split()) if s and s.strip() else set(); print(\" \".join(sorted(ts(os.environ.get(\"JOBS_ALL\",\"\")) - ts(os.environ.get(\"INIT_JOBS\",\"\")))))')\"; SOURCE=\"new-folders\"; fi"
-      - "echo \"Source => ${SOURCE}\""
-      - "echo \"Jobs to initialize => ${JOB_LIST:-<none>}\""
-      - "echo \"${JOB_LIST:-}\" > /tmp/job_list.txt"
+      - JOBS_FROM_ENV="$(echo "${JOBS}" | tr ',' ' ' | xargs || true)"
+      - JOBS_ALL="$( (find jobs -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null) || (ls -d jobs/*/ 2>/dev/null | xargs -n1 basename) || true )"
+      - echo "Found job folders => ${JOBS_ALL:-none}"
+      - TMP_MANIFEST="/tmp/initialized-jobs.json"
+      - if aws s3api head-object --bucket "${MANIFEST_BUCKET}" --key "${MANIFEST_KEY}" >/dev/null 2>&1; then aws s3 cp "s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}" "${TMP_MANIFEST}"; echo 'Loaded manifest'; else echo '[]' > "${TMP_MANIFEST}"; echo 'No manifest found; starting fresh'; fi
+      - INIT_JOBS="$(python3 -c 'import json; print(" ".join(sorted(set(map(str, json.load(open("/tmp/initialized-jobs.json")))))))')"
+      - echo "Already initialized => ${INIT_JOBS:-none}"
+      - if [ -n "${JOBS_FROM_ENV}" ]; then JOB_LIST="${JOBS_FROM_ENV}"; SOURCE="override"; else JOB_LIST="$(python3 -c 'import os; ts=lambda s: set(s.split()) if s and s.strip() else set(); print(" ".join(sorted(ts(os.environ.get("JOBS_ALL","")) - ts(os.environ.get("INIT_JOBS","")))))')"; SOURCE="new-folders"; fi
+      - echo "Source => ${SOURCE}"
+      - echo "Jobs to initialize => ${JOB_LIST:-<none>}"
+      - echo "${JOB_LIST:-}" > /tmp/job_list.txt
 
   build:
     commands:
-      - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; if [ -z \"${JOB_LIST:-}\" ]; then echo \"No new jobs to initialize. Skipping setup.\"; else echo \"Running setup_glue_job.py for: ${JOB_LIST}\"; if [ \"${DRY_RUN}\" = \"true\" ]; then echo \"[DRY RUN] python3 setup_glue_job.py ${JOB_LIST}\"; else python3 setup_glue_job.py ${JOB_LIST}; fi; fi"
+      - JOB_LIST="$(cat /tmp/job_list.txt 2>/dev/null || true)"
+      - |
+        if [ -z "${JOB_LIST:-}" ]; then
+          echo "No new jobs to initialize. Skipping setup."
+        else
+          echo "Running setup_glue_job.py for: ${JOB_LIST}"
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo "[DRY RUN] python3 setup_glue_job.py ${JOB_LIST}"
+          else
+            python3 setup_glue_job.py ${JOB_LIST}
+          fi
+        fi
 
   post_build:
     commands:
@@ -60,10 +71,9 @@ phases:
       - git config --global user.name "${GIT_AUTHOR_NAME:-codebuild-bot}"
       - git config --global user.email "${GIT_AUTHOR_EMAIL:-codebuild-bot@users.noreply.github.com}"
 
-      # ----- Resolve branch name robustly (supports refs/heads, SHA, or plain name) -----
+      # Resolve branch
       - |
         BRANCH="${CODEBUILD_WEBHOOK_HEAD_REF#refs/heads/}"
-
         if [ -z "$BRANCH" ]; then
           if [[ -n "${CODEBUILD_SOURCE_VERSION:-}" && "${CODEBUILD_SOURCE_VERSION}" =~ ^refs/heads/ ]]; then
             BRANCH="${CODEBUILD_SOURCE_VERSION#refs/heads/}"
@@ -71,54 +81,56 @@ phases:
             git fetch origin --prune >/dev/null 2>&1 || true
             BRANCH="$(git branch -r --contains "${CODEBUILD_SOURCE_VERSION}" 2>/dev/null | sed -n 's|.*origin/||p' | head -n1)"
           elif [[ -n "${CODEBUILD_SOURCE_VERSION:-}" ]]; then
-            # Plain branch name (e.g., intial-setup)
             if git ls-remote --exit-code --heads origin "${CODEBUILD_SOURCE_VERSION}" >/dev/null 2>&1; then
               BRANCH="${CODEBUILD_SOURCE_VERSION}"
             fi
           fi
         fi
 
-        # Try current checkout if still empty (avoid detached HEAD)
         if [ -z "$BRANCH" ]; then
           CUR="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
           [ "$CUR" != "HEAD" ] && BRANCH="$CUR"
         fi
-
-        # Fallback to origin default branch if still empty
         if [ -z "$BRANCH" ]; then
           git fetch origin --prune >/dev/null 2>&1 || true
           DEFAULT_BRANCH="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
           BRANCH="${DEFAULT_BRANCH}"
         fi
-
-        # Final default: TARGET_BRANCH or the repo branch name you’re using
         BRANCH="${BRANCH:-${TARGET_BRANCH:-intial-setup}}"
         echo "[PB] Branch=$BRANCH"
 
-      - git fetch origin "${BRANCH}:${BRANCH}" || true
-      - git checkout "${BRANCH}" || git checkout -B "${BRANCH}"
-      - git pull --ff-only origin "${BRANCH}" || true
+      # Fetch and checkout safely
+      - |
+        if [ "$(git rev-parse --abbrev-ref HEAD)" = "$BRANCH" ]; then
+          git fetch origin --prune || true
+        else
+          git fetch origin "${BRANCH}:${BRANCH}" || true
+        fi
+        git checkout "${BRANCH}" || git checkout -B "${BRANCH}"
+        git pull --ff-only origin "${BRANCH}" || true
 
-      # Commit only if files changed (handle multiple jobs)
+      # Commit if jobs changed
       - |
         JOB_LIST="$(cat /tmp/job_list.txt 2>/dev/null || true)"
         if [ -n "$JOB_LIST" ] && [ -n "$(git status --porcelain jobs/)" ]; then
-          for j in $JOB_LIST; do
-            git add "jobs/$j"
-          done
+          for j in $JOB_LIST; do git add "jobs/$j"; done
           git commit -m "chore(glue): initialized jobs ${JOB_LIST} [skip ci]"
         else
           echo "[PB] Nothing to commit for jobs: ${JOB_LIST:-<none>}"
         fi
 
-      # Push
+      # Push (with token check function)
       - |
-        if [ -z "${GITHUB_TOKEN}" ]; then
-          echo "[PB] ERROR: GITHUB_TOKEN empty" >&2
-          exit 1
-        else
-          echo "[PB] GITHUB_TOKEN is set, length=${#GITHUB_TOKEN}"
-        fi
+        check_token() {
+          if [ -z "${GITHUB_TOKEN}" ]; then
+            echo "[PB] ERROR: GITHUB_TOKEN empty" >&2
+            exit 1
+          else
+            echo "[PB] GITHUB_TOKEN is set, length=${#GITHUB_TOKEN}"
+          fi
+        }
+        check_token
+
         git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git"
         git push origin "${BRANCH}" && echo "[PB] push done"
 
