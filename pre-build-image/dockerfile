@@ -14,17 +14,20 @@
 #  && mkdir -p "$TF_PLUGIN_CACHE_DIR"
 
 
-# Dockerfile.codebuild
-# Builds a custom image with Terraform, Python build tools, AND the Docker engine.
-# CORRECTED FOR AMAZON LINUX 2023-based images.
+# Dockerfile.codebuild (Final Recommended Version)
+# This image prepares your build environment with Terraform and Python tools.
 
-# Use the correct, specific Amazon Linux 2 base image for x86_64
+# Dockerfile.codebuild (Final Version with all dependencies)
+# This image prepares your build environment with Terraform, Python build tools,
+# and all Python packages from requirements.txt.
+
+# Use the official CodeBuild base image for Amazon Linux 2023
 FROM public.ecr.aws/codebuild/amazonlinux2-x86_64-standard:5.0
 
 # Define the Terraform version as a build argument
 ARG TF_VERSION=1.5.7
 
-# Set environment variables for Terraform and system PATH
+# Set environment variables for the system PATH and Terraform's plugin cache
 ENV TF_PLUGIN_CACHE_DIR=/root/.terraform.d/plugin-cache \
     PATH=/usr/local/bin:$PATH
 
@@ -39,29 +42,26 @@ RUN set -e; \
     unzip /tmp/tfinstall/terraform.zip -d /usr/local/bin; \
     terraform -version; \
     rm -rf /tmp/tfinstall; \
-    mkdir -p "$TF_PLUGIN_CACHE_DIR"; \
-    echo "Terraform installation complete."
-
-# --- Install Docker Engine (Corrected for AL2023) ---
-# This is required for Docker-in-Docker (DinD) functionality.
-RUN set -e; \
-    echo "Installing Docker engine on AL2023..."; \
-    yum update -y; \
-    # Use 'yum install' directly, as 'amazon-linux-extras' is not available on AL2023
-    yum install -y docker; \
-    yum install -y shadow-utils; \
-    usermod -aG docker root || true; \
-    echo "Docker engine installation complete."
+    mkdir -p "$TF_PLUGIN_CACHE_DIR";
 
 # --- Install Python Build Tools ---
+# This gives us the 'build' command to create the wheel file directly.
 RUN set -e; \
     echo "Installing Python build tools..."; \
+    yum update -y; \
     yum install -y python3 python3-pip python3-devel gcc; \
-    pip3 install --upgrade pip build wheel setuptools; \
-    echo "Python build tools installation complete."
+    pip3 install --upgrade pip build wheel setuptools;
 
-# Final command to confirm Docker version (optional)
-CMD ["docker", "--version"]
+# --- Install Python Dependencies from requirements.txt ---
+# Set the working directory for the copy operation
+WORKDIR /app
+# Copy the requirements file from your local machine into the image
+COPY requirements.txt .
+# Install all the packages listed in the file
+RUN echo "Installing Python dependencies from requirements.txt..."; \
+    pip3 install -r requirements.txt;
+# Reset working directory if desired, or leave it as /app
+WORKDIR /
 
 
 

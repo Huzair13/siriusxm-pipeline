@@ -340,40 +340,27 @@
 #   paths:
 #     - /root/.terraform.d/plugin-cache/**
 
-
 version: 0.2
 
 env:
   variables:
     TF_PLUGIN_CACHE_DIR: /root/.terraform.d/plugin-cache
-    # Set ARTIFACT_BUCKET in the CodeBuild project environment
+    # Ensure ARTIFACT_BUCKET is set in your CodeBuild project environment
 
-# In your buildspec.yml
 phases:
   install:
     commands:
+      # This phase is now extremely simple because the custom image has all our tools.
       - |
         set -e
-        echo "Using Terraform from custom image: $(terraform version | head -1)"
+        echo "Verifying tools from custom image..."
+        echo "Terraform version: $(terraform version | head -1)"
+        echo "Python version: $(python3 --version)"
         mkdir -p "${TF_PLUGIN_CACHE_DIR}"
-
-        # --- Start Docker daemon (DinD) with enhanced debugging ---
-        echo "Starting Docker daemon..."
-        nohup /usr/bin/dockerd --host=unix:///var/run/docker.sock --storage-driver=overlay2 >/var/log/dockerd.log 2>&1 &
-
-        # Wait for the daemon to become responsive. If it fails, print the logs.
-        echo "Waiting for Docker daemon to initialize..."
-        if ! timeout 90 sh -c 'until docker info >/dev/null 2>&1; do echo "."; sleep 1; done'; then
-          echo "ERROR: Docker daemon failed to start within 90 seconds."
-          echo "--- Displaying Docker daemon logs for debugging ---"
-          cat /var/log/dockerd.log
-          exit 1
-        fi
-        
-        echo "Docker is ready: $(docker --version)"
 
   pre_build:
     commands:
+      # This phase finds changed job directories and builds the wheel file directly with Python.
       - |
         set -e
         echo "Detecting changed directories..."
@@ -386,21 +373,15 @@ phases:
         fi
         echo "CHANGED_DIRS=${CHANGED_DIRS}"
 
-        echo "Building wheels for Glue jobs..."
+        echo "Building wheels natively for Glue jobs..."
         for dir in $CHANGED_DIRS; do
           case "$dir" in
             jobs/*)
               echo "--- Building wheel in ${dir} ---"
               pushd "$dir" >/dev/null
-              
-              # Ensure Docker is still running before proceeding
-              docker info >/dev/null 2>&1 || { echo "ERROR: Docker daemon is not running in ${dir}."; exit 1; }
-              
               rm -rf ./dist ./utils-*.whl
-              docker build -t glue-job-builder .
-              CID=$(docker create glue-job-builder)
-              docker cp "$CID":/out/utils-0.1-py3-none-any.whl ./utils-0.1-py3-none-any.whl
-              docker rm "$CID"
+              # This is the key command that replaces all the Docker logic.
+              python3 -m build --wheel --outdir .
               
               # Verify the wheel was created successfully
               if [ ! -f "utils-0.1-py3-none-any.whl" ]; then
@@ -413,9 +394,10 @@ phases:
           esac
         done
 
-  # ... (build, post_build, artifacts, and cache sections remain the same) ...
   build:
     commands:
+      # This phase remains the same. It will now succeed because the .whl file
+      # is correctly created in the pre_build step.
       - |
         set -e
         for dir in $CHANGED_DIRS; do
@@ -436,6 +418,7 @@ phases:
 
   post_build:
     commands:
+      # This phase also remains unchanged.
       - |
         set -e
         ARTIFACT_BUCKET=${ARTIFACT_BUCKET:?Set ARTIFACT_BUCKET}
@@ -455,5 +438,3 @@ artifacts:
 cache:
   paths:
     - /root/.terraform.d/plugin-cache/**
-
-
