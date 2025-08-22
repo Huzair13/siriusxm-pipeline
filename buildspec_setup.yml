@@ -295,10 +295,6 @@
 version: 0.2
 
 env:
-  # (optional) If you also keep creds in Secrets Manager, map them here.
-  secrets-manager:
-     # Replace with your secret name or ARN if you want; otherwise leave empty
-
   variables:
     MANIFEST_BUCKET: "terraform-state-talend-migrations-us-east-1"
     MANIFEST_KEY_JOBS: "glue/setup/initialized-jobs.json"
@@ -307,8 +303,6 @@ env:
     BITBUCKET_BASE_URL: "https://string-pleasant-resources-treasury.trycloudflare.com"
     BITBUCKET_PROJECT:  "SIR"
     BITBUCKET_REPO_SLUG: "siriusxm"
-    # NOTE: Provide BITBUCKET_USERNAME as a *plaintext* env var in CodeBuild settings.
-    # NOTE: Provide BITBUCKET_TOKEN as you already do (env var).
 
     # Optional overrides (space- or comma-separated)
     JOBS: ""
@@ -381,7 +375,7 @@ phases:
       # ---- Commit only if files changed ----
       - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; SP_LIST=\"$(cat /tmp/sp_list.txt 2>/dev/null || true)\"; CHANGES=0; if [ -n \"$JOB_LIST\" ] && [ -n \"$(git status --porcelain jobs/ 2>/dev/null)\" ]; then git add $(for j in $JOB_LIST; do echo \"jobs/$j\"; done); CHANGES=1; fi; if [ -n \"$SP_LIST\" ] && [ -n \"$(git status --porcelain sp_jobs/ 2>/dev/null)\" ]; then git add $(for s in $SP_LIST; do echo \"sp_jobs/$s\"; done); CHANGES=1; fi; if [ \"$CHANGES\" -eq 1 ]; then git commit -m \"chore(glue): initialized jobs [${JOB_LIST:-none}] and sp_jobs [${SP_LIST:-none}] [skip ci]\"; else echo \"[PB] Nothing to commit for jobs: ${JOB_LIST:-<none>} | sp_jobs: ${SP_LIST:-<none>}\"; fi"
 
-      # ---- Push to Bitbucket Server/DC (HTTP token) ----
+      # ---- Push to Bitbucket Server/DC (inline token; no username var needed) ----
       - |
         set -euo pipefail
 
@@ -389,29 +383,22 @@ phases:
           echo "[PB] ERROR: BITBUCKET_BASE_URL / BITBUCKET_PROJECT / BITBUCKET_REPO_SLUG must be set"
           exit 1
         fi
-        if [ -z "${BITBUCKET_USERNAME:-}" ] || [ -z "${BITBUCKET_TOKEN:-}" ]; then
-          echo "[PB] ERROR: BITBUCKET_USERNAME and BITBUCKET_TOKEN must be set as environment variables"
+        if [ -z "${BITBUCKET_TOKEN:-}" ]; then
+          echo "[PB] ERROR: BITBUCKET_TOKEN must be set as an environment variable"
           exit 1
         fi
 
-        # Canonical Bitbucket Server/DC HTTPS git URL (note /scm/)
-        REMOTE_URL="${BITBUCKET_BASE_URL%/}/scm/${BITBUCKET_PROJECT}/${BITBUCKET_REPO_SLUG}.git"
-        echo "[PB] Using Bitbucket remote: ${REMOTE_URL}"
+        REMOTE_URL_NOAUTH="${BITBUCKET_BASE_URL%/}/scm/${BITBUCKET_PROJECT}/${BITBUCKET_REPO_SLUG}.git"
+        echo "[PB] Using Bitbucket remote: ${REMOTE_URL_NOAUTH}"
 
-        # If Bitbucket is behind a private CA via trycloudflare, either bake CA into the image or (last resort):
+        # If your Bitbucket (via trycloudflare) uses a custom CA, install it in the image or (last resort):
         # git config --global http."${BITBUCKET_BASE_URL}".sslVerify false
 
-        # Use ~/.netrc to avoid printing tokens in logs/URLs
-        NETRC_HOST="$(echo "${BITBUCKET_BASE_URL#https://}" | sed 's#^http://##' | cut -d/ -f1)"
-        umask 077
-        cat > ~/.netrc <<EOF
-        machine ${NETRC_HOST}
-        login ${BITBUCKET_USERNAME}
-        password ${BITBUCKET_TOKEN}
-        EOF
+        # Temporarily disable xtrace to avoid printing token
+        set +x
+        git remote set-url origin "https://x-token-auth:${BITBUCKET_TOKEN}@${REMOTE_URL_NOAUTH#https://}"
+        set -x
 
-        # Point origin to Bitbucket and push resolved $BRANCH
-        git remote set-url origin "${REMOTE_URL}"
         git fetch origin "${BRANCH}:${BRANCH}" || true
         git checkout "${BRANCH}" || git checkout -B "${BRANCH}"
         git pull --ff-only origin "${BRANCH}" || true
