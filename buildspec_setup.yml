@@ -294,10 +294,6 @@
 version: 0.2
 
 env:
-  # (optional) If you also keep creds in Secrets Manager, map them here.
-  secrets-manager:
-     # Replace with your secret name or ARN if you want; otherwise leave empty
-
   variables:
     MANIFEST_BUCKET: "terraform-state-talend-migrations-us-east-1"
     MANIFEST_KEY_JOBS: "glue/setup/initialized-jobs.json"
