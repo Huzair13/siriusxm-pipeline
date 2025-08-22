@@ -1,130 +1,423 @@
+# version: 0.2
+
+# env:
+#   variables:
+#     MANIFEST_BUCKET: "terraform-state-talend-migrations-us-east-1"
+#     MANIFEST_KEY: "glue/setup/initialized-jobs.json"
+#     JOBS: ""
+#     DRY_RUN: "false"
+
+# phases:
+#   install:
+#     commands:
+#       - "set -euo pipefail"
+#       - "python3 --version || true"
+#       - "pip3 --version || true"
+#       - "if [ -f requirements.txt ]; then pip3 install -r requirements.txt; fi"
+#       - "if ! aws --version >/dev/null 2>&1; then pip3 install awscli; fi"
+#       - "if [ -z \"${MANIFEST_BUCKET}\" ]; then echo 'ERROR: MANIFEST_BUCKET is not set'; exit 1; fi"
+#       - "echo \"Using manifest s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}\""
+
+#   pre_build:
+#     commands:
+#       - "JOBS_FROM_ENV=\"$(echo \"${JOBS}\" | tr ',' ' ' | xargs || true)\""
+#       - "JOBS_ALL=\"$( (find jobs -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' 2>/dev/null) || (ls -d jobs/*/ 2>/dev/null | xargs -n1 basename) || true )\""
+#       - "echo \"Found job folders => ${JOBS_ALL:-none}\""
+#       - "TMP_MANIFEST=\"/tmp/initialized-jobs.json\""
+#       - "if aws s3api head-object --bucket \"${MANIFEST_BUCKET}\" --key \"${MANIFEST_KEY}\" >/dev/null 2>&1; then aws s3 cp \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}\" \"${TMP_MANIFEST}\"; echo 'Loaded manifest'; else echo '[]' > \"${TMP_MANIFEST}\"; echo 'No manifest found; starting fresh'; fi"
+#       - "INIT_JOBS=\"$(python3 -c 'import json; print(\" \".join(sorted(set(map(str, json.load(open(\"/tmp/initialized-jobs.json\")))))))')\""
+#       - "echo \"Already initialized => ${INIT_JOBS:-none}\""
+#       - "if [ -n \"${JOBS_FROM_ENV}\" ]; then JOB_LIST=\"${JOBS_FROM_ENV}\"; SOURCE=\"override\"; else JOB_LIST=\"$(python3 -c 'import os; ts=lambda s: set(s.split()) if s and s.strip() else set(); print(\" \".join(sorted(ts(os.environ.get(\"JOBS_ALL\",\"\")) - ts(os.environ.get(\"INIT_JOBS\",\"\")))))')\"; SOURCE=\"new-folders\"; fi"
+#       - "echo \"Source => ${SOURCE}\""
+#       - "echo \"Jobs to initialize => ${JOB_LIST:-<none>}\""
+#       - "echo \"${JOB_LIST:-}\" > /tmp/job_list.txt"
+
+#   build:
+#     commands:
+#       - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; if [ -z \"${JOB_LIST:-}\" ]; then echo \"No new jobs to initialize. Skipping setup.\"; else echo \"Running setup_glue_job.py for: ${JOB_LIST}\"; if [ \"${DRY_RUN}\" = \"true\" ]; then echo \"[DRY RUN] python3 setup_glue_job.py ${JOB_LIST}\"; else python3 setup_glue_job.py ${JOB_LIST}; fi; fi"
+
+#   post_build:
+#     commands:
+#       - |
+#         if [ "${DRY_RUN}" = "true" ]; then 
+#           echo "[PB] DRY RUN: skipping manifest & push"
+#           exit 0
+#         fi
+
+#       # Update manifest
+#       - |
+#         JOB_LIST="$(cat /tmp/job_list.txt 2>/dev/null || true)"
+#         if [ -z "${JOB_LIST}" ]; then
+#           echo "[PB] No changes to manifest"
+#         else
+#           python3 -c 'import json,os;p="/tmp/initialized-jobs.json";cur=set(json.load(open(p)));cur|=set(os.environ.get("JOB_LIST","").split());open(p,"w").write(json.dumps(sorted(cur)))'
+#           aws s3 cp /tmp/initialized-jobs.json "s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"
+#           echo "[PB] Manifest updated"
+#         fi
+
+#       # Git setup
+#       - git config --global safe.directory '*'
+#       - git config --global user.name "${GIT_AUTHOR_NAME:-codebuild-bot}"
+#       - git config --global user.email "${GIT_AUTHOR_EMAIL:-codebuild-bot@users.noreply.github.com}"
+
+#       # Resolve branch
+#       - |
+#         BRANCH="${CODEBUILD_WEBHOOK_HEAD_REF#refs/heads/}"
+#         if [ -z "$BRANCH" ]; then
+#           if [[ "${CODEBUILD_SOURCE_VERSION:-}" =~ ^refs/heads/ ]]; then
+#             BRANCH="${CODEBUILD_SOURCE_VERSION#refs/heads/}"
+#           elif [[ "${CODEBUILD_SOURCE_VERSION:-}" =~ ^[0-9a-f]{7,40}$ ]]; then
+#             git fetch origin --prune >/dev/null 2>&1 || true
+#             BRANCH="$(git branch -r --contains "${CODEBUILD_SOURCE_VERSION}" 2>/dev/null | sed -n 's|.*origin/||p' | head -n1)"
+#           fi
+#         fi
+#         BRANCH="${BRANCH:-${TARGET_BRANCH:-intial-setup}}"
+#         echo "[PB] Branch=$BRANCH"
+
+#       - git fetch origin "${BRANCH}:${BRANCH}" || true
+#       - git checkout "${BRANCH}" || git checkout -B "${BRANCH}"
+#       - git pull --ff-only origin "${BRANCH}" || true
+
+#       # Commit only if files changed
+#       - |
+#         JOB_LIST="$(cat /tmp/job_list.txt 2>/dev/null || true)"
+#         if [ -n "$JOB_LIST" ] && [ -n "$(git status --porcelain jobs/)" ]; then
+#           git add "jobs/${JOB_LIST}"
+#           git commit -m "chore(glue): initialized jobs ${JOB_LIST} [skip ci]"
+#         else
+#           echo "[PB] Nothing to commit for jobs: ${JOB_LIST:-<none>}"
+#         fi
+
+#       # Push
+#       - |
+#         if [ -z "${GITHUB_TOKEN}" ]; then
+          
+#           exit 1
+#         else
+#           echo "[PB] GITHUB_TOKEN is set, length=${#GITHUB_TOKEN}"
+#         fi
+#         git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git"
+#         git push origin "${BRANCH}" && echo "[PB] push done"
+
+# artifacts:
+#   files:
+#     - "**/*"
+#   discard-paths: no
+
+
+# version: 0.2
+
+# env:
+#   variables:
+#     MANIFEST_BUCKET: "terraform-state-talend-migrations-us-east-1"
+#     MANIFEST_KEY_JOBS: "glue/setup/initialized-jobs.json"
+#     MANIFEST_KEY_SP:   "glue/setup/initialized-sp-jobs.json"
+
+#     # Optional overrides (space- or comma-separated)
+#     JOBS: ""
+#     SP_JOBS: ""
+
+#     DRY_RUN: "false"
+
+# phases:
+#   install:
+#     commands:
+#       - "set -euo pipefail"
+#       - "echo Using bucket: ${MANIFEST_BUCKET}"
+#       - "echo Using pre-baked Python/AWS CLI/reqs from the custom image"
+
+#   pre_build:
+#     commands:
+#       # ---- Discover folders ----
+#       - "JOBS_ALL=\"$( (find jobs -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null) || (ls -d jobs/*/ 2>/dev/null | xargs -n1 basename) || true )\""
+#       - "SP_ALL=\"$( (find sp_jobs -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null) || (ls -d sp_jobs/*/ 2>/dev/null | xargs -n1 basename) || true )\""
+#       - "echo \"Found job folders     => ${JOBS_ALL:-none}\""
+#       - "echo \"Found sp_job folders  => ${SP_ALL:-none}\""
+
+#       # ---- Load manifests (create empty [] if missing) ----
+#       - "TMP_MANIFEST_JOBS='/tmp/initialized-jobs.json'"
+#       - "TMP_MANIFEST_SP='/tmp/initialized-sp-jobs.json'"
+#       - "if aws s3api head-object --bucket \"${MANIFEST_BUCKET}\" --key \"${MANIFEST_KEY_JOBS}\" >/dev/null 2>&1; then aws s3 cp \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY_JOBS}\" \"${TMP_MANIFEST_JOBS}\"; echo '[pre] Loaded jobs manifest'; else echo '[]' > \"${TMP_MANIFEST_JOBS}\"; echo '[pre] No jobs manifest; starting fresh'; fi"
+#       - "if aws s3api head-object --bucket \"${MANIFEST_BUCKET}\" --key \"${MANIFEST_KEY_SP}\"   >/dev/null 2>&1; then aws s3 cp \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY_SP}\"   \"${TMP_MANIFEST_SP}\";   echo '[pre] Loaded sp_jobs manifest'; else echo '[]' > \"${TMP_MANIFEST_SP}\";   echo '[pre] No sp_jobs manifest; starting fresh'; fi"
+
+#       # ---- Compute already-initialized sets ----
+#       - "INIT_JOBS=\"$(python3 -c \"import json; print(' '.join(sorted(map(str, json.load(open(\\\"/tmp/initialized-jobs.json\\\"))))))\")\""
+#       - "INIT_SP=\"$(python3 -c \"import json; print(' '.join(sorted(map(str, json.load(open(\\\"/tmp/initialized-sp-jobs.json\\\"))))))\")\""
+#       - "echo \"Already initialized (jobs)    => ${INIT_JOBS:-none}\""
+#       - "echo \"Already initialized (sp_jobs) => ${INIT_SP:-none}\""
+
+#       # ---- Optional overrides from env ----
+#       - "JOBS_FROM_ENV=\"$(echo \"${JOBS}\" | tr ',,' ', ' | tr ',' ' ' | xargs || true)\""
+#       - "SP_FROM_ENV=\"$(echo \"${SP_JOBS}\" | tr ',,' ', ' | tr ',' ' ' | xargs || true)\""
+
+#       # ---- Decide what to run (new folders minus initialized, unless overridden) ----
+#       - "if [ -n \"${JOBS_FROM_ENV}\" ]; then JOB_LIST=\"${JOBS_FROM_ENV}\"; SRC_JOBS='override'; else JOB_LIST=\"$(ALL=\"${JOBS_ALL}\" INIT=\"${INIT_JOBS}\" python3 -c \"import os; ts=lambda s:set(s.split()) if s and s.strip() else set(); print(' '.join(sorted(ts(os.environ.get('ALL',''))-ts(os.environ.get('INIT','')))))\")\"; SRC_JOBS='new-folders'; fi; echo \"Source (jobs) => ${SRC_JOBS}\"; echo \"Jobs to initialize => ${JOB_LIST:-<none>}\"; printf '%s' \"${JOB_LIST:-}\" > /tmp/job_list.txt"
+#       - "if [ -n \"${SP_FROM_ENV}\" ]; then SP_LIST=\"${SP_FROM_ENV}\"; SRC_SP='override'; else SP_LIST=\"$(ALL=\"${SP_ALL}\" INIT=\"${INIT_SP}\" python3 -c \"import os; ts=lambda s:set(s.split()) if s and s.strip() else set(); print(' '.join(sorted(ts(os.environ.get('ALL',''))-ts(os.environ.get('INIT','')))))\")\"; SRC_SP='new-folders'; fi; echo \"Source (sp_jobs) => ${SRC_SP}\"; echo \"SP jobs to initialize => ${SP_LIST:-<none>}\"; printf '%s' \"${SP_LIST:-}\" > /tmp/sp_list.txt"
+
+#   build:
+#     commands:
+#       - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; if [ -z \"${JOB_LIST:-}\" ]; then echo 'No new jobs to initialize.'; else echo \"Running setup_glue_job.py for: ${JOB_LIST}\"; if [ \"${DRY_RUN}\" = 'true' ]; then echo \"[DRY RUN] python3 setup_glue_job.py ${JOB_LIST}\"; else python3 setup_glue_job.py ${JOB_LIST}; fi; fi"
+#       - "SP_LIST=\"$(cat /tmp/sp_list.txt 2>/dev/null || true)\";  if [ -z \"${SP_LIST:-}\" ];  then echo 'No new sp_jobs to initialize.'; else echo \"Running setup_sp_job.py for: ${SP_LIST}\";   if [ \"${DRY_RUN}\" = 'true' ]; then echo \"[DRY RUN] python3 setup_sp_job.py ${SP_LIST}\";   else python3 setup_sp_job.py ${SP_LIST};   fi; fi"
+
+#   post_build:
+#     commands:
+#       # Skip manifest/push entirely in dry run
+#       - "if [ \"${DRY_RUN}\" = 'true' ]; then echo '[PB] DRY RUN: skipping manifest & push'; exit 0; fi"
+
+#       # ---- Update manifests ----
+#       - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; if [ -n \"${JOB_LIST}\" ]; then JOB_LIST=\"${JOB_LIST}\" python3 -c \"import json,os; p='/tmp/initialized-jobs.json'; cur=set(json.load(open(p))); cur|=set(os.environ.get('JOB_LIST','').split()); open(p,'w').write(json.dumps(sorted(cur)))\"; aws s3 cp /tmp/initialized-jobs.json \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY_JOBS}\"; echo '[PB] Jobs manifest updated'; else echo '[PB] No jobs manifest changes'; fi"
+#       - "SP_LIST=\"$(cat /tmp/sp_list.txt 2>/dev/null || true)\";  if [ -n \"${SP_LIST}\" ];  then SP_LIST=\"${SP_LIST}\"  python3 -c \"import json,os; p='/tmp/initialized-sp-jobs.json'; cur=set(json.load(open(p))); cur|=set(os.environ.get('SP_LIST','').split()); open(p,'w').write(json.dumps(sorted(cur)))\";  aws s3 cp /tmp/initialized-sp-jobs.json \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY_SP}\"; echo '[PB] SP jobs manifest updated'; else echo '[PB] No sp_jobs manifest changes'; fi"
+
+#       # ---- Git config ----
+#       - "git config --global safe.directory '*'"
+#       - "git config --global user.name  \"${GIT_AUTHOR_NAME:-codebuild-bot}\""
+#       - "git config --global user.email \"${GIT_AUTHOR_EMAIL:-codebuild-bot@users.noreply.github.com}\""
+
+#       # ---- Resolve branch robustly ----
+#       - "BRANCH=\"${CODEBUILD_WEBHOOK_HEAD_REF#refs/heads/}\"; if [ -z \"$BRANCH\" ]; then if [[ \"${CODEBUILD_SOURCE_VERSION:-}\" =~ ^refs/heads/ ]]; then BRANCH=\"${CODEBUILD_SOURCE_VERSION#refs/heads/}\"; elif [[ \"${CODEBUILD_SOURCE_VERSION:-}\" =~ ^[0-9a-f]{7,40}$ ]]; then git fetch origin --prune >/dev/null 2>&1 || true; BRANCH=\"$(git branch -r --contains \"${CODEBUILD_SOURCE_VERSION}\" 2>/dev/null | sed -n 's|.*origin/||p' | head -n1)\"; fi; fi; BRANCH=\"${BRANCH:-${TARGET_BRANCH:-initial-setup}}\"; echo \"[PB] Branch=$BRANCH\""
+
+#       - "git fetch origin \"${BRANCH}:${BRANCH}\" || true"
+#       - "git checkout \"${BRANCH}\" || git checkout -B \"${BRANCH}\""
+#       - "git pull --ff-only origin \"${BRANCH}\" || true"
+
+#       # ---- Commit only if files changed ----
+#       - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; SP_LIST=\"$(cat /tmp/sp_list.txt 2>/dev/null || true)\"; CHANGES=0; if [ -n \"$JOB_LIST\" ] && [ -n \"$(git status --porcelain jobs/ 2>/dev/null)\" ]; then git add $(for j in $JOB_LIST; do echo \"jobs/$j\"; done); CHANGES=1; fi; if [ -n \"$SP_LIST\" ] && [ -n \"$(git status --porcelain sp_jobs/ 2>/dev/null)\" ]; then git add $(for s in $SP_LIST; do echo \"sp_jobs/$s\"; done); CHANGES=1; fi; if [ \"$CHANGES\" -eq 1 ]; then git commit -m \"chore(glue): initialized jobs [${JOB_LIST:-none}] and sp_jobs [${SP_LIST:-none}] [skip ci]\"; else echo \"[PB] Nothing to commit for jobs: ${JOB_LIST:-<none>} | sp_jobs: ${SP_LIST:-<none>}\"; fi"
+
+#       # ---- Push (requires GITHUB_TOKEN) ----
+#       - "if [ -z \"${GITHUB_TOKEN:-}\" ]; then echo '[PB] ERROR: GITHUB_TOKEN not set'; exit 1; else echo \"[PB] GITHUB_TOKEN is set, length=${#GITHUB_TOKEN}\"; fi"
+#       - "git remote set-url origin \"https://x-access-token:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git\""
+#       - "git push origin \"${BRANCH}\" && echo '[PB] push done'"
+
+# artifacts:
+#   files:
+#     - "**/*"
+#   discard-paths: no
+
+
+
+
+# version: 0.2
+
+# env:
+#   # The GITHUB_TOKEN variable is now defined in the secrets-manager section
+#   secrets-manager:
+#      # Replace with your secret name or ARN
+  
+#   variables:
+#     MANIFEST_BUCKET: "terraform-state-talend-migrations-us-east-1"
+#     MANIFEST_KEY_JOBS: "glue/setup/initialized-jobs.json"
+#     MANIFEST_KEY_SP:   "glue/setup/initialized-sp-jobs.json"
+#     BITBUCKET_BASE_URL: "https://string-pleasant-resources-treasury.trycloudflare.com"
+#     BITBUCKET_PROJECT:  "SIR"
+#     BITBUCKET_REPO_SLUG: "siriusxm"
+
+#     # Optional overrides (space- or comma-separated)
+#     JOBS: ""
+#     SP_JOBS: ""
+
+#     DRY_RUN: "false"
+
+# phases:
+#   install:
+#     commands:
+#       - "set -euo pipefail"
+#       - "echo Using bucket: ${MANIFEST_BUCKET}"
+#       - "echo Using pre-baked Python/AWS CLI/reqs from the custom image"
+
+#   pre_build:
+#     commands:
+#       # ---- Discover folders ----
+#       - "JOBS_ALL=\"$( (find jobs -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null) || (ls -d jobs/*/ 2>/dev/null | xargs -n1 basename) || true )\""
+#       - "SP_ALL=\"$( (find sp_jobs -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null) || (ls -d sp_jobs/*/ 2>/dev/null | xargs -n1 basename) || true )\""
+#       - "echo \"Found job folders     => ${JOBS_ALL:-none}\""
+#       - "echo \"Found sp_job folders  => ${SP_ALL:-none}\""
+
+#       # ---- Load manifests (create empty [] if missing) ----
+#       - "TMP_MANIFEST_JOBS='/tmp/initialized-jobs.json'"
+#       - "TMP_MANIFEST_SP='/tmp/initialized-sp-jobs.json'"
+#       - "if aws s3api head-object --bucket \"${MANIFEST_BUCKET}\" --key \"${MANIFEST_KEY_JOBS}\" >/dev/null 2>&1; then aws s3 cp \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY_JOBS}\" \"${TMP_MANIFEST_JOBS}\"; echo '[pre] Loaded jobs manifest'; else echo '[]' > \"${TMP_MANIFEST_JOBS}\"; echo '[pre] No jobs manifest; starting fresh'; fi"
+#       - "if aws s3api head-object --bucket \"${MANIFEST_BUCKET}\" --key \"${MANIFEST_KEY_SP}\"   >/dev/null 2>&1; then aws s3 cp \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY_SP}\"   \"${TMP_MANIFEST_SP}\";   echo '[pre] Loaded sp_jobs manifest'; else echo '[]' > \"${TMP_MANIFEST_SP}\";   echo '[pre] No sp_jobs manifest; starting fresh'; fi"
+
+#       # ---- Compute already-initialized sets ----
+#       - "INIT_JOBS=\"$(python3 -c \"import json; print(' '.join(sorted(map(str, json.load(open(\\\"/tmp/initialized-jobs.json\\\"))))))\")\""
+#       - "INIT_SP=\"$(python3 -c \"import json; print(' '.join(sorted(map(str, json.load(open(\\\"/tmp/initialized-sp-jobs.json\\\"))))))\")\""
+#       - "echo \"Already initialized (jobs)    => ${INIT_JOBS:-none}\""
+#       - "echo \"Already initialized (sp_jobs) => ${INIT_SP:-none}\""
+
+#       # ---- Optional overrides from env ----
+#       - "JOBS_FROM_ENV=\"$(echo \"${JOBS}\" | tr ',,' ', ' | tr ',' ' ' | xargs || true)\""
+#       - "SP_FROM_ENV=\"$(echo \"${SP_JOBS}\" | tr ',,' ', ' | tr ',' ' ' | xargs || true)\""
+
+#       # ---- Decide what to run (new folders minus initialized, unless overridden) ----
+#       - "if [ -n \"${JOBS_FROM_ENV}\" ]; then JOB_LIST=\"${JOBS_FROM_ENV}\"; SRC_JOBS='override'; else JOB_LIST=\"$(ALL=\"${JOBS_ALL}\" INIT=\"${INIT_JOBS}\" python3 -c \"import os; ts=lambda s:set(s.split()) if s and s.strip() else set(); print(' '.join(sorted(ts(os.environ.get('ALL',''))-ts(os.environ.get('INIT','')))))\")\"; SRC_JOBS='new-folders'; fi; echo \"Source (jobs) => ${SRC_JOBS}\"; echo \"Jobs to initialize => ${JOB_LIST:-<none>}\"; printf '%s' \"${JOB_LIST:-}\" > /tmp/job_list.txt"
+#       - "if [ -n \"${SP_FROM_ENV}\" ]; then SP_LIST=\"${SP_FROM_ENV}\"; SRC_SP='override'; else SP_LIST=\"$(ALL=\"${SP_ALL}\" INIT=\"${INIT_SP}\" python3 -c \"import os; ts=lambda s:set(s.split()) if s and s.strip() else set(); print(' '.join(sorted(ts(os.environ.get('ALL',''))-ts(os.environ.get('INIT','')))))\")\"; SRC_SP='new-folders'; fi; echo \"Source (sp_jobs) => ${SRC_SP}\"; echo \"SP jobs to initialize => ${SP_LIST:-<none>}\"; printf '%s' \"${SP_LIST:-}\" > /tmp/sp_list.txt"
+
+#   build:
+#     commands:
+#       - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; if [ -z \"${JOB_LIST:-}\" ]; then echo 'No new jobs to initialize.'; else echo \"Running setup_glue_job.py for: ${JOB_LIST}\"; if [ \"${DRY_RUN}\" = 'true' ]; then echo \"[DRY RUN] python3 setup_glue_job.py ${JOB_LIST}\"; else python3 setup_glue_job.py ${JOB_LIST}; fi; fi"
+#       - "SP_LIST=\"$(cat /tmp/sp_list.txt 2>/dev/null || true)\";  if [ -z \"${SP_LIST:-}\" ];  then echo 'No new sp_jobs to initialize.'; else echo \"Running setup_sp_job.py for: ${SP_LIST}\";   if [ \"${DRY_RUN}\" = 'true' ]; then echo \"[DRY RUN] python3 setup_sp_job.py ${SP_LIST}\";   else python3 setup_sp_job.py ${SP_LIST};   fi; fi"
+
+#   post_build:
+#     commands:
+#       # Skip manifest/push entirely in dry run
+#       - "if [ \"${DRY_RUN}\" = 'true' ]; then echo '[PB] DRY RUN: skipping manifest & push'; exit 0; fi"
+
+#       # ---- Update manifests ----
+#       - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; if [ -n \"${JOB_LIST}\" ]; then JOB_LIST=\"${JOB_LIST}\" python3 -c \"import json,os; p='/tmp/initialized-jobs.json'; cur=set(json.load(open(p))); cur|=set(os.environ.get('JOB_LIST','').split()); open(p,'w').write(json.dumps(sorted(cur)))\"; aws s3 cp /tmp/initialized-jobs.json \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY_JOBS}\"; echo '[PB] Jobs manifest updated'; else echo '[PB] No jobs manifest changes'; fi"
+#       - "SP_LIST=\"$(cat /tmp/sp_list.txt 2>/dev/null || true)\";  if [ -n \"${SP_LIST}\" ];  then SP_LIST=\"${SP_LIST}\"  python3 -c \"import json,os; p='/tmp/initialized-sp-jobs.json'; cur=set(json.load(open(p))); cur|=set(os.environ.get('SP_LIST','').split()); open(p,'w').write(json.dumps(sorted(cur)))\";  aws s3 cp /tmp/initialized-sp-jobs.json \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY_SP}\"; echo '[PB] SP jobs manifest updated'; else echo '[PB] No sp_jobs manifest changes'; fi"
+
+#       # ---- Git config ----
+#       - "git config --global safe.directory '*'"
+#       - "git config --global user.name  \"${GIT_AUTHOR_NAME:-codebuild-bot}\""
+#       - "git config --global user.email \"${GIT_AUTHOR_EMAIL:-codebuild-bot@users.noreply.github.com}\""
+
+#       # ---- Resolve branch robustly ----
+#       - "BRANCH=\"${CODEBUILD_WEBHOOK_HEAD_REF#refs/heads/}\"; if [ -z \"$BRANCH\" ]; then if [[ \"${CODEBUILD_SOURCE_VERSION:-}\" =~ ^refs/heads/ ]]; then BRANCH=\"${CODEBUILD_SOURCE_VERSION#refs/heads/}\"; elif [[ \"${CODEBUILD_SOURCE_VERSION:-}\" =~ ^[0-9a-f]{7,40}$ ]]; then git fetch origin --prune >/dev/null 2>&1 || true; BRANCH=\"$(git branch -r --contains \"${CODEBUILD_SOURCE_VERSION}\" 2>/dev/null | sed -n 's|.*origin/||p' | head -n1)\"; fi; fi; BRANCH=\"${BRANCH:-${TARGET_BRANCH:-initial-setup}}\"; echo \"[PB] Branch=$BRANCH\""
+#       - "git fetch origin \"${BRANCH}:${BRANCH}\" || true"
+#       - "git checkout \"${BRANCH}\" || git checkout -B \"${BRANCH}\""
+#       - "git pull --ff-only origin \"${BRANCH}\" || true"
+
+#       # ---- Commit only if files changed ----
+#       - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; SP_LIST=\"$(cat /tmp/sp_list.txt 2>/dev/null || true)\"; CHANGES=0; if [ -n \"$JOB_LIST\" ] && [ -n \"$(git status --porcelain jobs/ 2>/dev/null)\" ]; then git add $(for j in $JOB_LIST; do echo \"jobs/$j\"; done); CHANGES=1; fi; if [ -n \"$SP_LIST\" ] && [ -n \"$(git status --porcelain sp_jobs/ 2>/dev/null)\" ]; then git add $(for s in $SP_LIST; do echo \"sp_jobs/$s\"; done); CHANGES=1; fi; if [ \"$CHANGES\" -eq 1 ]; then git commit -m \"chore(glue): initialized jobs [${JOB_LIST:-none}] and sp_jobs [${SP_LIST:-none}] [skip ci]\"; else echo \"[PB] Nothing to commit for jobs: ${JOB_LIST:-<none>} | sp_jobs: ${SP_LIST:-<none>}\"; fi"
+
+#       # ---- Push (requires GITHUB_TOKEN) ----
+#       # The GITHUB_TOKEN is now securely passed from Secrets Manager
+#       - "if [ -z \"${GITHUB_TOKEN:-}\" ]; then echo '[PB] ERROR: GITHUB_TOKEN not retrieved from Secrets Manager'; exit 1; else echo \"[PB] GITHUB_TOKEN is set.\"; fi"
+#       - "git remote set-url origin \"https://x-access-token:${GITHUB_TOKEN}@github.com/Huzair13/siriusxm-pipeline.git\""
+#       - "git push origin \"${BRANCH}\" && echo '[PB] push done'"
+
+# artifacts:
+#   files:
+#     - "**/*"
+#   discard-paths: no
+
+
 version: 0.2
 
 env:
+  # (optional) If you also keep creds in Secrets Manager, map them here.
+  secrets-manager:
+     # Replace with your secret name or ARN if you want; otherwise leave empty
+
   variables:
-    MANIFEST_BUCKET: "terraform-state-talend-migrations-us-east-1"                 # e.g., my-ci-state-bucket
-    MANIFEST_KEY: "glue/setup/initialized-jobs.json"
-    JOBS: ""                            # optional override: "job_6 job_7" or "job_6,job_7"
-    DRY_RUN: "false"                    # set "true" to preview
+    MANIFEST_BUCKET: "terraform-state-talend-migrations-us-east-1"
+    MANIFEST_KEY_JOBS: "glue/setup/initialized-jobs.json"
+    MANIFEST_KEY_SP:   "glue/setup/initialized-sp-jobs.json"
+
+    BITBUCKET_BASE_URL: "https://string-pleasant-resources-treasury.trycloudflare.com"
+    BITBUCKET_PROJECT:  "SIR"
+    BITBUCKET_REPO_SLUG: "siriusxm"
+    # NOTE: Provide BITBUCKET_USERNAME as a *plaintext* env var in CodeBuild settings.
+    # NOTE: Provide BITBUCKET_TOKEN as you already do (env var).
+
+    # Optional overrides (space- or comma-separated)
+    JOBS: ""
+    SP_JOBS: ""
+
+    DRY_RUN: "false"
 
 phases:
   install:
     commands:
-      - set -euo pipefail
-      - echo "Python: $(python3 --version || true)"
-      - echo "Pip: $(pip3 --version || true)"
-      - if [ -f requirements.txt ]; then pip3 install -r requirements.txt; fi
-      - |
-        if ! aws --version >/dev/null 2>&1; then
-          echo "awscli not found; installing..."
-          pip3 install awscli
-        fi
-      - |
-        if [ -z "${MANIFEST_BUCKET}" ]; then
-          echo "ERROR: MANIFEST_BUCKET is not set."
-          exit 1
-        fi
-        echo "State manifest: s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"
+      - "set -euo pipefail"
+      - "echo Using bucket: ${MANIFEST_BUCKET}"
+      - "echo Using pre-baked Python/AWS CLI/reqs from the custom image"
 
   pre_build:
     commands:
-      - echo "Resolving jobs to initialize (one-time setup)…"
-      # Normalize optional override from env
-      - JOBS_FROM_ENV="$(echo "${JOBS}" | tr ',' ' ' | xargs || true)"
-      # List current job folders in repo
-      - |
-        list_all_jobs() {
-          if [ -d jobs ]; then
-            # prefer 'find' with -printf; fallback to ls if -printf unsupported
-            find jobs -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null \
-              || ls -d jobs/*/ 2>/dev/null | xargs -n1 basename
-          fi
-        }
-        JOBS_ALL="$(list_all_jobs || true)"
-        echo "Found job folders: ${JOBS_ALL:-<none>}"
+      # ---- Discover folders ----
+      - "JOBS_ALL=\"$( (find jobs -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null) || (ls -d jobs/*/ 2>/dev/null | xargs -n1 basename) || true )\""
+      - "SP_ALL=\"$( (find sp_jobs -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null) || (ls -d sp_jobs/*/ 2>/dev/null | xargs -n1 basename) || true )\""
+      - "echo \"Found job folders     => ${JOBS_ALL:-none}\""
+      - "echo \"Found sp_job folders  => ${SP_ALL:-none}\""
 
-      # Pull manifest from S3 (create empty if missing)
-      - |
-        TMP_MANIFEST="/tmp/initialized-jobs.json"
-        if aws s3api head-object --bucket "${MANIFEST_BUCKET}" --key "${MANIFEST_KEY}" >/dev/null 2>&1; then
-          aws s3 cp "s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}" "${TMP_MANIFEST}"
-          echo "Loaded existing manifest."
-        else
-          echo '[]' > "${TMP_MANIFEST}"
-          echo "No manifest found; starting fresh."
-        fi
-        echo "Current manifest contents:"; cat "${TMP_MANIFEST}"
+      # ---- Load manifests (create empty [] if missing) ----
+      - "TMP_MANIFEST_JOBS='/tmp/initialized-jobs.json'"
+      - "TMP_MANIFEST_SP='/tmp/initialized-sp-jobs.json'"
+      - "if aws s3api head-object --bucket \"${MANIFEST_BUCKET}\" --key \"${MANIFEST_KEY_JOBS}\" >/dev/null 2>&1; then aws s3 cp \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY_JOBS}\" \"${TMP_MANIFEST_JOBS}\"; echo '[pre] Loaded jobs manifest'; else echo '[]' > \"${TMP_MANIFEST_JOBS}\"; echo '[pre] No jobs manifest; starting fresh'; fi"
+      - "if aws s3api head-object --bucket \"${MANIFEST_BUCKET}\" --key \"${MANIFEST_KEY_SP}\"   >/dev/null 2>&1; then aws s3 cp \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY_SP}\"   \"${TMP_MANIFEST_SP}\";   echo '[pre] Loaded sp_jobs manifest'; else echo '[]' > \"${TMP_MANIFEST_SP}\";   echo '[pre] No sp_jobs manifest; starting fresh'; fi"
 
-      # Compute NEW jobs = current folders - already-initialized (unless override provided)
-      - |
-        if [ -n "${JOBS_FROM_ENV}" ]; then
-          JOB_LIST="${JOBS_FROM_ENV}"
-          SOURCE="override (env:JOBS)"
-        else
-          # parse JSON array -> space list
-          INIT_JOBS="$(python3 - <<'PY'
-          import json,sys
-          data=json.load(open("/tmp/initialized-jobs.json"))
-          print(" ".join(sorted(set(data))))
-          PY
-        )"
-          echo "Already initialized: ${INIT_JOBS:-<none>}"
-          # set difference
-          JOB_LIST="$(python3 - <<'PY'
-        import sys,subprocess,shlex
-        def to_set(s): return set(s.split()) if s.strip() else set()
-        # read shell env via os
-        import os
-        jobs_all=os.environ.get("JOBS_ALL","")
-        init_jobs=os.environ.get("INIT_JOBS","")
-        new = to_set(jobs_all) - to_set(init_jobs)
-        print(" ".join(sorted(new)))
-        PY
-        )"
-          SOURCE="detected new folders (uninitialized)"
-        fi
+      # ---- Compute already-initialized sets ----
+      - "INIT_JOBS=\"$(python3 -c \"import json; print(' '.join(sorted(map(str, json.load(open(\\\"/tmp/initialized-jobs.json\\\"))))))\")\""
+      - "INIT_SP=\"$(python3 -c \"import json; print(' '.join(sorted(map(str, json.load(open(\\\"/tmp/initialized-sp-jobs.json\\\"))))))\")\""
+      - "echo \"Already initialized (jobs)    => ${INIT_JOBS:-none}\""
+      - "echo \"Already initialized (sp_jobs) => ${INIT_SP:-none}\""
 
-        if [ -z "${JOB_LIST:-}" ]; then
-          echo "No new jobs to initialize."
-          if [ "${DRY_RUN}" = "true" ]; then exit 0; fi
-          # nothing to do; exit successfully so manual trigger doesn't fail
-          exit 0
-        fi
+      # ---- Optional overrides from env ----
+      - "JOBS_FROM_ENV=\"$(echo \"${JOBS}\" | tr ',,' ', ' | tr ',' ' ' | xargs || true)\""
+      - "SP_FROM_ENV=\"$(echo \"${SP_JOBS}\" | tr ',,' ', ' | tr ',' ' ' | xargs || true)\""
 
-        echo "Job source: ${SOURCE}"
-        echo "Jobs to initialize: ${JOB_LIST}"
+      # ---- Decide what to run (new folders minus initialized, unless overridden) ----
+      - "if [ -n \"${JOBS_FROM_ENV}\" ]; then JOB_LIST=\"${JOBS_FROM_ENV}\"; SRC_JOBS='override'; else JOB_LIST=\"$(ALL=\"${JOBS_ALL}\" INIT=\"${INIT_JOBS}\" python3 -c \"import os; ts=lambda s:set(s.split()) if s and s.strip() else set(); print(' '.join(sorted(ts(os.environ.get('ALL',''))-ts(os.environ.get('INIT','')))))\")\"; SRC_JOBS='new-folders'; fi; echo \"Source (jobs) => ${SRC_JOBS}\"; echo \"Jobs to initialize => ${JOB_LIST:-<none>}\"; printf '%s' \"${JOB_LIST:-}\" > /tmp/job_list.txt"
+      - "if [ -n \"${SP_FROM_ENV}\" ]; then SP_LIST=\"${SP_FROM_ENV}\"; SRC_SP='override'; else SP_LIST=\"$(ALL=\"${SP_ALL}\" INIT=\"${INIT_SP}\" python3 -c \"import os; ts=lambda s:set(s.split()) if s and s.strip() else set(); print(' '.join(sorted(ts(os.environ.get('ALL',''))-ts(os.environ.get('INIT','')))))\")\"; SRC_SP='new-folders'; fi; echo \"Source (sp_jobs) => ${SRC_SP}\"; echo \"SP jobs to initialize => ${SP_LIST:-<none>}\"; printf '%s' \"${SP_LIST:-}\" > /tmp/sp_list.txt"
 
   build:
     commands:
-      - |
-        echo "Executing setup_glue_job.py for: ${JOB_LIST}"
-        if [ "${DRY_RUN}" = "true" ]; then
-          echo "[DRY RUN] python3 setup_glue_job.py ${JOB_LIST}"
-        else
-          python3 setup_glue_job.py ${JOB_LIST}
-        fi
+      - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; if [ -z \"${JOB_LIST:-}\" ]; then echo 'No new jobs to initialize.'; else echo \"Running setup_glue_job.py for: ${JOB_LIST}\"; if [ \"${DRY_RUN}\" = 'true' ]; then echo \"[DRY RUN] python3 setup_glue_job.py ${JOB_LIST}\"; else python3 setup_glue_job.py ${JOB_LIST}; fi; fi"
+      - "SP_LIST=\"$(cat /tmp/sp_list.txt 2>/dev/null || true)\";  if [ -z \"${SP_LIST:-}\" ];  then echo 'No new sp_jobs to initialize.'; else echo \"Running setup_sp_job.py for: ${SP_LIST}\";   if [ \"${DRY_RUN}\" = 'true' ]; then echo \"[DRY RUN] python3 setup_sp_job.py ${SP_LIST}\";   else python3 setup_sp_job.py ${SP_LIST};   fi; fi"
 
   post_build:
     commands:
+      # Skip manifest/push entirely in dry run
+      - "if [ \"${DRY_RUN}\" = 'true' ]; then echo '[PB] DRY RUN: skipping manifest & push'; exit 0; fi"
+
+      # ---- Update manifests ----
+      - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; if [ -n \"${JOB_LIST}\" ]; then JOB_LIST=\"${JOB_LIST}\" python3 -c \"import json,os; p='/tmp/initialized-jobs.json'; cur=set(json.load(open(p))); cur|=set(os.environ.get('JOB_LIST','').split()); open(p,'w').write(json.dumps(sorted(cur)))\"; aws s3 cp /tmp/initialized-jobs.json \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY_JOBS}\"; echo '[PB] Jobs manifest updated'; else echo '[PB] No jobs manifest changes'; fi"
+      - "SP_LIST=\"$(cat /tmp/sp_list.txt 2>/dev/null || true)\";  if [ -n \"${SP_LIST}\" ];  then SP_LIST=\"${SP_LIST}\"  python3 -c \"import json,os; p='/tmp/initialized-sp-jobs.json'; cur=set(json.load(open(p))); cur|=set(os.environ.get('SP_LIST','').split()); open(p,'w').write(json.dumps(sorted(cur)))\";  aws s3 cp /tmp/initialized-sp-jobs.json \"s3://${MANIFEST_BUCKET}/${MANIFEST_KEY_SP}\"; echo '[PB] SP jobs manifest updated'; else echo '[PB] No sp_jobs manifest changes'; fi"
+
+      # ---- Git config ----
+      - "git config --global safe.directory '*'"
+      - "git config --global user.name  \"${GIT_AUTHOR_NAME:-codebuild-bot}\""
+      - "git config --global user.email \"${GIT_AUTHOR_EMAIL:-codebuild-bot@users.noreply.github.com}\""
+
+      # ---- Resolve branch robustly ----
+      - "BRANCH=\"${CODEBUILD_WEBHOOK_HEAD_REF#refs/heads/}\"; if [ -z \"$BRANCH\" ]; then if [[ \"${CODEBUILD_SOURCE_VERSION:-}\" =~ ^refs/heads/ ]]; then BRANCH=\"${CODEBUILD_SOURCE_VERSION#refs/heads/}\"; elif [[ \"${CODEBUILD_SOURCE_VERSION:-}\" =~ ^[0-9a-f]{7,40}$ ]]; then git fetch origin --prune >/dev/null 2>&1 || true; BRANCH=\"$(git branch -r --contains \"${CODEBUILD_SOURCE_VERSION}\" 2>/dev/null | sed -n 's|.*origin/||p' | head -n1)\"; fi; fi; BRANCH=\"${BRANCH:-${TARGET_BRANCH:-initial-setup}}\"; echo \"[PB] Branch=$BRANCH\""
+
+      # ---- Ensure we have the branch locally (against current origin) ----
+      - "git fetch origin \"${BRANCH}:${BRANCH}\" || true"
+      - "git checkout \"${BRANCH}\" || git checkout -B \"${BRANCH}\""
+      - "git pull --ff-only origin \"${BRANCH}\" || true"
+
+      # ---- Commit only if files changed ----
+      - "JOB_LIST=\"$(cat /tmp/job_list.txt 2>/dev/null || true)\"; SP_LIST=\"$(cat /tmp/sp_list.txt 2>/dev/null || true)\"; CHANGES=0; if [ -n \"$JOB_LIST\" ] && [ -n \"$(git status --porcelain jobs/ 2>/dev/null)\" ]; then git add $(for j in $JOB_LIST; do echo \"jobs/$j\"; done); CHANGES=1; fi; if [ -n \"$SP_LIST\" ] && [ -n \"$(git status --porcelain sp_jobs/ 2>/dev/null)\" ]; then git add $(for s in $SP_LIST; do echo \"sp_jobs/$s\"; done); CHANGES=1; fi; if [ \"$CHANGES\" -eq 1 ]; then git commit -m \"chore(glue): initialized jobs [${JOB_LIST:-none}] and sp_jobs [${SP_LIST:-none}] [skip ci]\"; else echo \"[PB] Nothing to commit for jobs: ${JOB_LIST:-<none>} | sp_jobs: ${SP_LIST:-<none>}\"; fi"
+
+      # ---- Push to Bitbucket Server/DC (HTTP token) ----
       - |
-        if [ "${DRY_RUN}" = "true" ]; then
-          echo "[DRY RUN] Skipping manifest update."
-          exit 0
+        set -euo pipefail
+
+        if [ -z "${BITBUCKET_BASE_URL:-}" ] || [ -z "${BITBUCKET_PROJECT:-}" ] || [ -z "${BITBUCKET_REPO_SLUG:-}" ]; then
+          echo "[PB] ERROR: BITBUCKET_BASE_URL / BITBUCKET_PROJECT / BITBUCKET_REPO_SLUG must be set"
+          exit 1
         fi
-        # Merge newly initialized jobs into manifest and push to S3
-        python3 - "$JOBS" "$JOBS_ALL" "$JOB_LIST" <<'PY'
-        import json, os, sys
-        tmp = "/tmp/initialized-jobs.json"
-        with open(tmp) as f: cur = set(json.load(f))
-        job_list = set(os.environ.get("JOB_LIST","").split())
-        cur |= job_list
-        with open(tmp, "w") as f: json.dump(sorted(cur), f)
-        print("Updated manifest:", sorted(cur))
-        PY
-        cat /tmp/initialized-jobs.json
-        aws s3 cp /tmp/initialized-jobs.json "s3://${MANIFEST_BUCKET}/${MANIFEST_KEY}"
+        if [ -z "${BITBUCKET_USERNAME:-}" ] || [ -z "${BITBUCKET_TOKEN:-}" ]; then
+          echo "[PB] ERROR: BITBUCKET_USERNAME and BITBUCKET_TOKEN must be set as environment variables"
+          exit 1
+        fi
+
+        # Canonical Bitbucket Server/DC HTTPS git URL (note /scm/)
+        REMOTE_URL="${BITBUCKET_BASE_URL%/}/scm/${BITBUCKET_PROJECT}/${BITBUCKET_REPO_SLUG}.git"
+        echo "[PB] Using Bitbucket remote: ${REMOTE_URL}"
+
+        # If Bitbucket is behind a private CA via trycloudflare, either bake CA into the image or (last resort):
+        # git config --global http."${BITBUCKET_BASE_URL}".sslVerify false
+
+        # Use ~/.netrc to avoid printing tokens in logs/URLs
+        NETRC_HOST="$(echo "${BITBUCKET_BASE_URL#https://}" | sed 's#^http://##' | cut -d/ -f1)"
+        umask 077
+        cat > ~/.netrc <<EOF
+        machine ${NETRC_HOST}
+        login ${BITBUCKET_USERNAME}
+        password ${BITBUCKET_TOKEN}
+        EOF
+
+        # Point origin to Bitbucket and push resolved $BRANCH
+        git remote set-url origin "${REMOTE_URL}"
+        git fetch origin "${BRANCH}:${BRANCH}" || true
+        git checkout "${BRANCH}" || git checkout -B "${BRANCH}"
+        git pull --ff-only origin "${BRANCH}" || true
+        git push origin "${BRANCH}" && echo "[PB] push done"
 
 artifacts:
   files:
-    - '**/*'
+    - "**/*"
   discard-paths: no
