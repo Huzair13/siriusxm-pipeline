@@ -299,7 +299,7 @@ env:
     MANIFEST_KEY_JOBS: "glue/setup/initialized-jobs.json"
     MANIFEST_KEY_SP:   "glue/setup/initialized-sp-jobs.json"
 
-    BITBUCKET_BASE_URL: "https://string-pleasant-resources-treasury.trycloudflare.com"
+    BITBUCKET_BASE_URL: "http://strike-stick-expansys-duo.trycloudflare.com:7999"
     BITBUCKET_PROJECT:  "SIR"
     BITBUCKET_REPO_SLUG: "siriusxm"
     BITBUCKET_USERNAME: "Huzair1303"
