@@ -445,8 +445,8 @@ phases:
   install:
     commands:
       - set -euo pipefail
-      - echo "Using bucket: ${MANIFEST_BUCKET}"
-      - echo "Using pre-baked Python/AWS CLI/reqs from the custom image"
+      # - echo "Using bucket: ${MANIFEST_BUCKET}"
+      # - echo "Using pre-baked Python/AWS CLI/reqs from the custom image"
 
   pre_build:
     commands:
