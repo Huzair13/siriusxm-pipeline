@@ -432,9 +432,8 @@ env:
     BITBUCKET_PROJECT:  "SIR"
     BITBUCKET_REPO_SLUG: "siriusxm"
 
-    # Provide this securely in CodeBuild (Bearer token for repo/project)
-    # Do NOT set any username for Git over HTTPS when using Bearer
-    # BITBUCKET_TOKEN is injected via CodeBuild env/secret
+    # Inject this securely in the CodeBuild project (no username needed)
+    # BITBUCKET_TOKEN: "<set in CodeBuild env/secret>"
 
     # Optional overrides (space- or comma-separated)
     JOBS: ""
@@ -446,8 +445,8 @@ phases:
   install:
     commands:
       - set -euo pipefail
-      - echo Using bucket: ${MANIFEST_BUCKET}
-      - echo Using pre-baked Python/AWS CLI/reqs from the custom image
+      - echo "Using bucket: ${MANIFEST_BUCKET}"
+      - echo "Using pre-baked Python/AWS CLI/reqs from the custom image"
 
   pre_build:
     commands:
@@ -520,12 +519,12 @@ phases:
           exit 1
         fi
 
-        # Canonical Bitbucket Server/DC HTTPS git URL (note /scm/)
+        # Canonical Bitbucket Server/DC HTTPS Git URL (note /scm/)
         REMOTE_URL="${BITBUCKET_BASE_URL%/}/scm/${BITBUCKET_PROJECT}/${BITBUCKET_REPO_SLUG}.git"
         echo "[PB] Using Bitbucket remote: ${REMOTE_URL}"
 
         # Use Bearer auth for repo/project HTTP access tokens (no username/.netrc)
-        # Scope header to host (or narrow to REMOTE_URL if preferred)
+        # Scope header to host (or narrow to REMOTE_URL instead if desired)
         git config --global http."${BITBUCKET_BASE_URL%/}".extraHeader "Authorization: Bearer ${BITBUCKET_TOKEN}"
 
         # Point origin and prepare local branch
